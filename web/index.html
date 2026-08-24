@@ -24,6 +24,14 @@
       </div>
     </header>
 
+    <section class="connection-notice panel" id="connectionNotice" hidden role="alert">
+      <div>
+        <strong>需要恢复 CPA 登录状态</strong>
+        <p id="connectionMessage">请返回 CPA 管理中心重新登录并启用“记住密码”，然后刷新本页面。</p>
+      </div>
+      <button class="button secondary" id="retryConnection" type="button">重新连接</button>
+    </section>
+
     <section class="toolbar panel" aria-label="凭证筛选">
       <label class="field compact"><span>提供商</span><select id="providerFilter"><option value="all">全部提供商</option><option value="codex">Codex</option><option value="antigravity">Antigravity</option></select></label>
       <label class="field compact"><span>层级</span><select id="tierFilter"><option value="all">全部层级</option><option value="primary">主用</option><option value="regular">常规</option><option value="backup">备用</option><option value="paused">暂停</option></select></label>
@@ -80,17 +88,6 @@
     <div class="live-status" id="liveStatus" role="status" aria-live="polite"></div>
   </main>
 
-  <dialog id="keyDialog" class="key-dialog">
-    <form method="dialog" id="keyForm">
-      <div class="eyebrow"><span class="status-dot"></span>连接 CPA</div>
-      <h2>输入管理密钥</h2>
-      <p>密钥只保留在当前页面内存中，用于读取和保存凭证层级。</p>
-      <label class="field"><span>管理密钥</span><input id="managementKey" type="password" autocomplete="off" required></label>
-      <p class="form-error" id="keyError" role="alert"></p>
-      <button class="button primary wide" id="connectButton" type="submit">连接</button>
-    </form>
-  </dialog>
   <script>/*__INLINE_JS__*/</script>
 </body>
 </html>
-

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,6 +132,17 @@ func TestManagementResourceContainsNoCredentialData(t *testing.T) {
 	}
 	if json.Valid(response.Body) {
 		t.Fatal("resource should be static HTML, not a dynamic JSON payload")
+	}
+	html := string(response.Body)
+	for _, forbidden := range []string{`id="managementKey"`, `id="keyDialog"`, `type="password"`, "localStorage.setItem", "sessionStorage.setItem"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("management resource contains forbidden login UI or storage write: %s", forbidden)
+		}
+	}
+	for _, required := range []string{"cli-proxy-auth", "connectionNotice"} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("management resource missing CPA sign-in reuse marker: %s", required)
+		}
 	}
 }
 

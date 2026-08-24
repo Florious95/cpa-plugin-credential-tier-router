@@ -2,7 +2,7 @@
 
 Credential Tiers is a native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that manages Codex and Antigravity credentials through four clear tiers: Primary, Regular, Backup, and Paused.
 
-The embedded Management Center page uses named policies instead of numeric scores and provides quota refresh, filtering, previews, manual overrides, and an audit history. The management key stays in page memory and is never persisted by the UI.
+The embedded Management Center page uses named policies instead of numeric scores and provides quota refresh, filtering, previews, manual overrides, and an audit history. It reuses the Management Center's saved sign-in state and never asks for or persists a second copy of the management key.
 
 ## Features
 
@@ -66,7 +66,7 @@ Go 1.24 and a C compiler are required because CPA's native plugin ABI uses cgo.
 ```bash
 make test
 make vet
-make package VERSION=0.1.1
+make package VERSION=0.1.2
 ```
 
 The package target writes a platform zip and checksum into `dist/`.
@@ -74,7 +74,8 @@ The package target writes a platform zip and checksum into `dist/`.
 ## Security
 
 - Management API requests require CPA's management key.
-- The embedded page keeps the key only in JavaScript memory.
+- The embedded page reads the Management Center's same-origin saved sign-in state and keeps the decoded key only in JavaScript memory.
+- If the Management Center sign-in was not saved, the page asks the user to sign in there with **Remember password** enabled; it never displays a separate key field.
 - Auth tokens are read through CPA host APIs and are not returned to the browser.
 - The plugin rejects nested or unsafe auth filenames before writeback.
 - State files are written with owner-only permissions.

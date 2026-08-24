@@ -13,7 +13,7 @@ const (
 	pluginID = "credential-tier-router"
 )
 
-var pluginVersion = "0.1.1"
+var pluginVersion = "0.1.2"
 
 type strategyName string
 
