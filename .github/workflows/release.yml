@@ -1,0 +1,98 @@
+name: Build and release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_NAME: credential-tier-router
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make test
+      - run: make vet
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+          - goos: darwin
+            goarch: arm64
+            runner: macos-15
+          - goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+          - goos: windows
+            goarch: amd64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up MinGW
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          update: true
+          install: mingw-w64-x86_64-gcc make
+      - name: Resolve version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION="0.0.0-dev"; fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "ARCHIVE=${PLUGIN_NAME}_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip" >> "$GITHUB_ENV"
+      - name: Package
+        run: make package VERSION="$VERSION" GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: |
+            dist/${{ env.ARCHIVE }}
+            dist/${{ env.ARCHIVE }}.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sort dist/*.sha256 > dist/checksums.txt
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes "Credential Tiers $GITHUB_REF_NAME: quota-aware named tiers for Codex and Antigravity credentials."

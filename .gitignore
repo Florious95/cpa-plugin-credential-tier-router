@@ -1,0 +1,9 @@
+/dist/
+/*.h
+/credential-tier-router
+/design-comparison-desktop.png
+/design-qa.md
+/implementation-desktop.png
+/implementation-mobile-390x844.png
+/scripts/update_devbox_config.py
+.DS_Store
