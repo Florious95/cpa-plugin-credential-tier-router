@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -47,6 +49,43 @@ func TestActivePoolCapProtectsHealthyIncumbents(t *testing.T) {
 			if credentials[i].ProposedTier != tierBackup {
 				t.Fatalf("reserve %s stole a protected slot at %d%%: proposed=%s", credentials[i].AuthIndex, remaining, credentials[i].ProposedTier)
 			}
+		}
+	}
+}
+
+func TestActivePoolCapProtectsIncumbentOnTransientProbeFailure(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	cfg := defaultSettings()
+	cfg.ActivePoolSize = 4
+	failed := failedQuota(quotaSnapshot{}, errors.New("temporary quota probe failure"), cfg.FailureThreshold, now)
+	if failed.Status != quotaRetry || failed.Remaining != nil {
+		t.Fatalf("first probe failure=%+v, want retry with unknown remaining", failed)
+	}
+	credentials := []credentialState{
+		{
+			Provider: "antigravity", AuthIndex: "shanavask", CurrentTier: tierPrimary,
+			ProposedTier: tierPrimary, Quota: failed,
+		},
+	}
+	for i, remaining := range []int{95, 90, 85, 80} {
+		credentials = append(credentials, credentialState{
+			Provider: "antigravity", AuthIndex: fmt.Sprintf("reserve-%d", i),
+			CurrentTier: tierBackup, ProposedTier: tierBackup,
+			Quota: readyQuota(remaining, nil, now),
+		})
+	}
+
+	applyActivePoolCap(&cfg, credentials, now)
+	if got := credentials[0].ProposedTier; got != tierPrimary || credentials[0].Changed {
+		t.Fatalf("transiently unprobed incumbent was demoted: proposed=%s changed=%v reason=%s", got, credentials[0].Changed, credentials[0].Reason)
+	}
+	for index, credential := range credentials[1:] {
+		want := tierPrimary
+		if index == cfg.ActivePoolSize-1 {
+			want = tierBackup
+		}
+		if credential.ProposedTier != want {
+			t.Fatalf("reserve %s tier=%s, want %s", credential.AuthIndex, credential.ProposedTier, want)
 		}
 	}
 }
