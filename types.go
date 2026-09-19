@@ -100,17 +100,19 @@ type historyEntry struct {
 }
 
 type persistedState struct {
-	Settings settings                 `json:"settings"`
-	Quota    map[string]quotaSnapshot `json:"quota"`
-	History  []historyEntry           `json:"history"`
+	Settings       settings                 `json:"settings"`
+	Quota          map[string]quotaSnapshot `json:"quota"`
+	History        []historyEntry           `json:"history"`
+	EgressReturnAt *time.Time               `json:"egress_return_at,omitempty"`
 }
 
 type dashboardState struct {
-	PluginStatus string         `json:"plugin_status"`
-	Settings     settings       `json:"settings"`
-	Plan         plan           `json:"plan"`
-	History      []historyEntry `json:"history"`
-	NextProbeAt  *time.Time     `json:"next_probe_at,omitempty"`
+	PluginStatus   string         `json:"plugin_status"`
+	Settings       settings       `json:"settings"`
+	Plan           plan           `json:"plan"`
+	History        []historyEntry `json:"history"`
+	NextProbeAt    *time.Time     `json:"next_probe_at,omitempty"`
+	EgressReturnAt *time.Time     `json:"egress_return_at,omitempty"`
 }
 
 type usageEvent struct {

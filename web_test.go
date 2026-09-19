@@ -23,7 +23,10 @@ func TestSettingsPanelExposesRestAndEgressControls(t *testing.T) {
 		`id="egressTarget" type="text" value="to-2.5x"`,
 		`id="geo400DebounceMinutes" type="number" min="1" step="1" value="5"`,
 		`id="geo400RestHours" type="number" min="1" step="1" value="24"`,
-		`id="geo400EgressEnabled" type="checkbox"`,
+		`id="geo400EgressEnabled" type="checkbox" role="switch"`,
+		`id="egressReturnTarget" type="text" value="to-wrap"`,
+		`id="geo400ReturnHours" type="number" min="0" step="1" value="12"`,
+		`id="egressReturnButton" type="button"`,
 	} {
 		if !strings.Contains(html, control) {
 			t.Errorf("settings panel missing %q", control)
@@ -53,6 +56,19 @@ func TestPreviewRefreshesNextProbeMetadata(t *testing.T) {
 	} {
 		if !strings.Contains(app, snippet) {
 			t.Errorf("preview path missing refreshed scheduler metadata marker %q", snippet)
+		}
+	}
+}
+
+func TestEgressReturnControlUsesManagementEndpoint(t *testing.T) {
+	app := readWebAssetForTest(t, "web/app.js")
+	for _, snippet := range []string{
+		"api('/egress/return',{method:'POST'})",
+		"current.egress_return_at",
+		"备用出口暂避中",
+	} {
+		if !strings.Contains(app, snippet) {
+			t.Errorf("app.js missing egress return marker %q", snippet)
 		}
 	}
 }
@@ -90,6 +106,8 @@ func TestSettingsPanelRoundTripsRuntimePolicyFields(t *testing.T) {
 		"geo400_debounce_minutes:Math.max(1,Number(byId('geo400DebounceMinutes').value)||5)",
 		"geo400_rest_hours:Math.max(1,Number(byId('geo400RestHours').value)||24)",
 		"geo400_egress_enabled:byId('geo400EgressEnabled').checked",
+		"egress_return_target:byId('egressReturnTarget').value.trim()||'to-wrap'",
+		"geo400_return_hours:Math.max(0,Number(byId('geo400ReturnHours').value)||0)",
 	} {
 		if !strings.Contains(app, snippet) {
 			t.Errorf("app.js missing settings round-trip marker %q", snippet)
