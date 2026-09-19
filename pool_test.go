@@ -100,7 +100,7 @@ func TestApplyPlanHardDisablesPausedAndRestoresOnPromotion(t *testing.T) {
 		t.Fatalf("paused state=%v, want disabled=true priority=-1", saved)
 	}
 	host.documents["a"] = authDocument{AuthIndex: "a", Name: "account.json", JSON: host.saved["account.json"]}
-	if err := r.applyPlan(context.Background(), []authFile{{AuthIndex: "a", Name: "account.json"}}, plan{Credentials: []credentialState{{AuthIndex: "a", ProposedTier: tierPrimary, Changed: true}}}); err != nil {
+	if err := r.applyPlan(context.Background(), []authFile{{AuthIndex: "a", Name: "account.json", Disabled: true}}, plan{Credentials: []credentialState{{AuthIndex: "a", ProposedTier: tierPrimary, Changed: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := json.Unmarshal(host.saved["account.json"], &saved); err != nil {

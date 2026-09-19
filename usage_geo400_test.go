@@ -45,14 +45,18 @@ func TestUsageGeo400DowngradesCredential(t *testing.T) {
 	}
 	t.Cleanup(func() { runEgressCommand = previous })
 
-	host := &fakeHost{documents: map[string]authDocument{
-		"idx-1": {AuthIndex: "idx-1", Name: "antigravity.json", JSON: json.RawMessage(`{"email":"user@example.com","priority":400,"proxy_url":"socks5://old"}`)},
-	}}
+	host := &fakeHost{
+		files: []authFile{{AuthIndex: "idx-1", Name: "antigravity.json", Provider: "antigravity", Priority: 400}},
+		documents: map[string]authDocument{
+			"idx-1": {AuthIndex: "idx-1", Name: "antigravity.json", JSON: json.RawMessage(`{"email":"user@example.com","priority":400,"proxy_url":"socks5://old"}`)},
+		},
+	}
 	r := newRuntime(host)
 	r.store.path = filepath.Join(t.TempDir(), "state.json")
 	r.state.Settings = defaultSettings()
 	r.latest = plan{Credentials: []credentialState{{AuthIndex: "idx-1", CurrentTier: tierPrimary, ProposedTier: tierPrimary}}}
-	r.geoNow = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
+	now := time.Now().UTC()
+	r.geoNow = func() time.Time { return now }
 	body := `Error: 400: {"code":400,"message":"User location is not supported for the API use.","status":"FAILED_PRECONDITION"}`
 	raw, err := json.Marshal(usageEvent{Provider: "antigravity", AuthIndex: "idx-1", Failed: true, Failure: usageFailure{StatusCode: 400, Body: body}})
 	if err != nil {
@@ -76,7 +80,7 @@ func TestUsageGeo400DowngradesCredential(t *testing.T) {
 		t.Fatalf("proxy_url changed unexpectedly: %v", got)
 	}
 	quota := r.state.Quota["idx-1"]
-	wantUntil := time.Date(2026, 9, 19, 14, 0, 0, 0, time.UTC)
+	wantUntil := now.Add(2 * time.Hour)
 	if quota.RestUntil == nil || !quota.RestUntil.Equal(wantUntil) {
 		t.Fatalf("RestUntil=%v, want %v", quota.RestUntil, wantUntil)
 	}

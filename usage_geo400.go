@@ -87,7 +87,6 @@ func (r *runtime) markGeoRest(event usageEvent, now time.Time, duration time.Dur
 	quota.ManagedRest = true
 	quota.ObservedAt = now
 	r.state.Quota[index] = quota
-	r.quotaRevision++
 	return until
 }
 
@@ -188,9 +187,13 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	account := firstText(event.AuthIndex, event.AuthID)
 	accountCount := r.recordGeoAccount(account, now, window)
 
-	// Record ownership before the host write. If a quota probe is in flight,
-	// its commit path will see the revision and preserve this pause.
+	// Fence all auth projections, not only a revision check before writing.
+	// Probes never hold this lock, so a slow upstream cannot delay the pause.
+	r.commitMu.Lock()
 	restUntil := r.markGeoRest(event, now, time.Duration(cfg.Geo400RestHours)*time.Hour)
+	persistErr := r.persistState()
+	// A safety disable is still attempted if the state disk is unavailable,
+	// but no replacement is promoted without a durable intent.
 	pauseErr := r.pauseGeoCredential(ctx, event)
 	if pauseErr != nil {
 		r.recordHistory("地区400", 0, 1, fmt.Sprintf("凭证 %s 命中地区限制，但即时降权失败：%s", firstText(event.AuthIndex, event.AuthID), safeError(pauseErr)))
@@ -198,12 +201,19 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 		r.markLatestGeoPaused(event, restUntil)
 		r.recordHistory("地区400", 1, 0, fmt.Sprintf("凭证 %s 命中地区限制，已降权并休眠 %d 小时", firstText(event.AuthIndex, event.AuthID), cfg.Geo400RestHours))
 	}
-	if cfg.ActivePoolSize > 0 && pauseErr == nil {
-		if err := r.reconcileActivePool(ctx, "地区400补位"); err != nil {
+	if cfg.ActivePoolSize > 0 && pauseErr == nil && persistErr == nil {
+		if _, err := r.commitPool(ctx, nil, true, "地区400补位"); err != nil {
 			r.recordHistory("地区400", 0, 1, "活跃池补位失败："+safeError(err))
 		}
 	}
-	r.persistState()
+	saveErr := r.persistState()
+	r.commitMu.Unlock()
+	if persistErr != nil {
+		return persistErr
+	}
+	if saveErr != nil {
+		return saveErr
+	}
 	if !cfg.Geo400EgressEnabled || accountCount < cfg.Geo400AccountThreshold || !r.acceptGeoEgress(now, window) {
 		return nil
 	}
@@ -226,11 +236,15 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	return nil
 }
 
-func (r *runtime) persistState() {
+// Serialize snapshot capture, JSON encoding and rename with all mutations.
+// Copying persistedState alone aliases its maps and can overwrite newer pools.
+func (r *runtime) persistState() error {
+	if r.loadErr != nil {
+		return fmt.Errorf("load state: %w", r.loadErr)
+	}
 	r.mu.Lock()
-	state := r.state
-	r.mu.Unlock()
-	_ = r.store.save(state)
+	defer r.mu.Unlock()
+	return r.store.save(r.state)
 }
 
 func (r *runtime) acceptGeoEvent(key string, now time.Time, window time.Duration) bool {
