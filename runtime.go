@@ -149,6 +149,10 @@ func (r *runtime) configure(config settings) error {
 	return nil
 }
 
+func nextProbeAt(now time.Time, cfg settings) time.Time {
+	return now.UTC().Add(cfg.interval())
+}
+
 func (r *runtime) restartWorker() {
 	r.mu.Lock()
 	if r.cancel != nil {
@@ -169,7 +173,7 @@ func (r *runtime) restartWorker() {
 		timer := time.NewTimer(cfg.interval())
 		defer timer.Stop()
 		for {
-			next := time.Now().UTC().Add(cfg.interval())
+			next := nextProbeAt(time.Now(), cfg)
 			r.mu.Lock()
 			r.nextProbe = &next
 			r.mu.Unlock()
