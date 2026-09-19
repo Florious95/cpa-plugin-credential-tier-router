@@ -81,7 +81,7 @@ Go 1.24 and a C compiler are required because CPA's native plugin ABI uses cgo.
 ```bash
 make test
 make vet
-make package VERSION=0.4.2
+make package VERSION=0.4.3
 ```
 
 The package target writes a platform zip and checksum into `dist/`.

@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// applyActivePoolCap keeps the highest-ranked healthy credentials in the primary
-// tier. The cap is per provider because CPA selects credentials per provider.
+// applyActivePoolCap keeps healthy incumbents in the primary tier and fills
+// vacancies by rank. The cap is per provider because CPA selects credentials per provider.
 // A zero cap leaves the strategy's normal tier decisions unchanged.
 func applyActivePoolCap(cfg *settings, credentials []credentialState, now time.Time) {
 	if cfg == nil || cfg.ActivePoolSize <= 0 {
@@ -27,13 +27,39 @@ func applyActivePoolCap(cfg *settings, credentials []credentialState, now time.T
 		sort.SliceStable(eligible, func(left, right int) bool {
 			return poolCandidateBefore(*cfg, credentials[eligible[left]], credentials[eligible[right]])
 		})
+
+		// Incumbents are non-preemptive: a healthy credential that already
+		// occupies a primary slot stays there while vacancies are filled around
+		// it. Only an over-cap historical state is trimmed among incumbents.
+		incumbents := make([]int, 0, len(eligible))
+		for _, index := range eligible {
+			if credentials[index].CurrentTier == tierPrimary {
+				incumbents = append(incumbents, index)
+			}
+		}
+		if len(incumbents) > cfg.ActivePoolSize {
+			incumbents = incumbents[:cfg.ActivePoolSize]
+		}
 		selected := make(map[int]bool, min(cfg.ActivePoolSize, len(eligible)))
-		for rank, index := range eligible {
+		for _, index := range incumbents {
+			selected[index] = true
+		}
+		needed := cfg.ActivePoolSize - len(selected)
+		for _, index := range eligible {
+			if needed == 0 {
+				break
+			}
+			if selected[index] {
+				continue
+			}
+			selected[index] = true
+			needed--
+		}
+		for _, index := range eligible {
 			credential := &credentials[index]
-			if rank < cfg.ActivePoolSize {
+			if selected[index] {
 				credential.ProposedTier = tierPrimary
-				credential.Reason = "活跃池前列"
-				selected[index] = true
+				credential.Reason = "活跃池现任/补位"
 			} else {
 				credential.ProposedTier = tierBackup
 				credential.Reason = "活跃池后备"
