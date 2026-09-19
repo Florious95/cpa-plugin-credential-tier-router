@@ -2,6 +2,14 @@ package main
 
 import "time"
 
+func inheritAntigravityRest(quota *quotaSnapshot, previous quotaSnapshot, now time.Time) {
+	if quota == nil || quota.RestUntil != nil || previous.RestUntil == nil || !previous.RestUntil.After(now) {
+		return
+	}
+	until := previous.RestUntil.UTC()
+	quota.RestUntil = &until
+}
+
 func applyAntigravityRest(cfg *settings, file authFile, current tierName, quota *quotaSnapshot, now time.Time) bool {
 	if cfg == nil || quota == nil || providerOf(file) != "antigravity" {
 		return false

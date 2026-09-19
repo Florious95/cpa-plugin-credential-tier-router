@@ -309,10 +309,12 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 			continue
 		}
 		current := tierFromPriority(file.Priority, file.Disabled)
+		previousQuota := cache[file.AuthIndex]
 		quota, probeErr := probeCredential(ctx, r.host, file, cfg, now)
 		if probeErr != nil {
-			quota = failedQuota(cache[file.AuthIndex], probeErr, cfg.FailureThreshold, now)
+			quota = failedQuota(previousQuota, probeErr, cfg.FailureThreshold, now)
 		}
+		inheritAntigravityRest(&quota, previousQuota, now)
 		applyAntigravityRest(&cfg, file, current, &quota, now)
 		cache[file.AuthIndex] = quota
 		proposed, reason := chooseTier(cfg, file, current, quota, now)
