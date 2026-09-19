@@ -25,6 +25,10 @@ type runtime struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	nextProbe *time.Time
+	geoMu     sync.Mutex
+	geoEvents map[string]time.Time
+	geoNow    func() time.Time
+	egressWG  sync.WaitGroup
 	closed    bool
 }
 
@@ -33,9 +37,16 @@ func newRuntime(host hostAPI) *runtime {
 	if statePath == "" {
 		statePath = filepath.Join("credential-tier-router", "state.json")
 	}
-	r := &runtime{host: host, store: stateStore{path: statePath}, done: make(chan struct{})}
+	r := &runtime{
+		host:      host,
+		store:     stateStore{path: statePath},
+		done:      make(chan struct{}),
+		geoEvents: make(map[string]time.Time),
+		geoNow:    time.Now,
+	}
 	if state, err := r.store.load(); err == nil {
 		r.state = state
+		r.state.Settings = normalizeSettings(r.state.Settings)
 	} else {
 		r.state = persistedState{Settings: defaultSettings(), Quota: map[string]quotaSnapshot{}}
 	}
@@ -58,6 +69,11 @@ func (r *runtime) handle(ctx context.Context, method string, request []byte) []b
 		return success(map[string]string{"status": "ok"})
 	case "management.register":
 		return success(managementRegistration())
+	case "usage.handle":
+		if err := r.handleUsage(ctx, request); err != nil {
+			return failure("invalid_usage", err.Error(), false)
+		}
+		return success(map[string]any{})
 	case "management.handle":
 		response, err := r.handleManagement(ctx, request)
 		if err != nil {
@@ -94,6 +110,7 @@ func decodeLifecycleConfig(raw []byte) (settings, error) {
 }
 
 func (r *runtime) configure(config settings) error {
+	config = normalizeSettings(config)
 	if err := config.validate(); err != nil {
 		return err
 	}
@@ -173,6 +190,7 @@ func (r *runtime) shutdown() {
 		case <-time.After(3 * time.Second):
 		}
 	}
+	r.egressWG.Wait()
 }
 
 func registrationResult() map[string]any {
@@ -186,7 +204,7 @@ func registrationResult() map[string]any {
 			"Description":      "Routes Codex and Antigravity credentials through clear primary, regular, backup, and paused tiers.",
 			"ConfigFields":     []any{},
 		},
-		"capabilities": map[string]bool{"management_api": true},
+		"capabilities": map[string]bool{"management_api": true, "usage_plugin": true},
 	}
 }
 
@@ -282,6 +300,7 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 		if probeErr != nil {
 			quota = failedQuota(cache[file.AuthIndex], probeErr, cfg.FailureThreshold, now)
 		}
+		applyAntigravityRest(&cfg, file, current, &quota, now)
 		cache[file.AuthIndex] = quota
 		proposed, reason := chooseTier(cfg, file, current, quota, now)
 		changed := proposed != current && !file.Unavailable && !(file.Disabled && proposed != tierPaused)
@@ -332,15 +351,24 @@ func failedQuota(previous quotaSnapshot, probeErr error, threshold int, now time
 	if failCount >= threshold {
 		status = quotaUnknown
 	}
-	return quotaSnapshot{ObservedAt: now, Status: status, FailCount: failCount, LastError: message}
+	return quotaSnapshot{
+		ObservedAt: now,
+		Status:     status,
+		FailCount:  failCount,
+		LastError:  message,
+		RestUntil:  previous.RestUntil,
+	}
 }
 
 func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapshot, now time.Time) (tierName, string) {
-	if file.Unavailable {
-		return current, "凭证当前不可用，保持原层级"
-	}
 	if file.Disabled {
 		return tierPaused, "凭证已由外部停用，不自动恢复"
+	}
+	if providerOf(file) == "antigravity" && quota.RestUntil != nil && quota.RestUntil.After(now) {
+		return tierPaused, fmt.Sprintf("强制休眠至 %s", quota.RestUntil.UTC().Format(time.RFC3339))
+	}
+	if file.Unavailable {
+		return current, "凭证当前不可用，保持原层级"
 	}
 	if quota.Status == quotaUnknown || quota.Status == quotaRetry || quota.Remaining == nil {
 		return current, "额度暂时未知，保持原层级"
@@ -413,6 +441,7 @@ func (r *runtime) applyPlan(ctx context.Context, files []authFile, result plan) 
 }
 
 func (r *runtime) updateSettings(next settings) error {
+	next = normalizeSettings(next)
 	if err := next.validate(); err != nil {
 		return err
 	}

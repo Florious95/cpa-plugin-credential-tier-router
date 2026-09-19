@@ -25,28 +25,54 @@ const (
 )
 
 type settings struct {
-	AutoApply        bool                `json:"auto_apply"`
-	Strategy         strategyName        `json:"strategy"`
-	IntervalMinutes  int                 `json:"interval_minutes"`
-	Providers        []string            `json:"providers"`
-	AntigravityGroup string              `json:"antigravity_group"`
-	FailureThreshold int                 `json:"failure_threshold"`
-	ManualTiers      map[string]tierName `json:"manual_tiers,omitempty"`
+	AutoApply             bool                `json:"auto_apply"`
+	Strategy              strategyName        `json:"strategy"`
+	IntervalMinutes       int                 `json:"interval_minutes"`
+	Providers             []string            `json:"providers"`
+	AntigravityGroup      string              `json:"antigravity_group"`
+	FailureThreshold      int                 `json:"failure_threshold"`
+	RestDurationHours     int                 `json:"rest_duration_hours"`
+	EgressCommand         string              `json:"egress_command"`
+	EgressTarget          string              `json:"egress_target"`
+	Geo400DebounceMinutes int                 `json:"geo400_debounce_minutes"`
+	ManualTiers           map[string]tierName `json:"manual_tiers,omitempty"`
 }
 
 func defaultSettings() settings {
 	return settings{
-		AutoApply:        false,
-		Strategy:         strategyQuota,
-		IntervalMinutes:  15,
-		Providers:        []string{"codex", "antigravity"},
-		AntigravityGroup: "gemini",
-		FailureThreshold: 3,
-		ManualTiers:      map[string]tierName{},
+		AutoApply:             false,
+		Strategy:              strategyQuota,
+		IntervalMinutes:       15,
+		Providers:             []string{"codex", "antigravity"},
+		AntigravityGroup:      "gemini",
+		FailureThreshold:      3,
+		RestDurationHours:     16,
+		EgressCommand:         "/usr/local/bin/cpa-egress-cycle",
+		EgressTarget:          "to-2.5x",
+		Geo400DebounceMinutes: 5,
+		ManualTiers:           map[string]tierName{},
 	}
 }
 
+func normalizeSettings(s settings) settings {
+	defaults := defaultSettings()
+	if s.RestDurationHours <= 0 {
+		s.RestDurationHours = defaults.RestDurationHours
+	}
+	if strings.TrimSpace(s.EgressCommand) == "" {
+		s.EgressCommand = defaults.EgressCommand
+	}
+	if strings.TrimSpace(s.EgressTarget) == "" {
+		s.EgressTarget = defaults.EgressTarget
+	}
+	if s.Geo400DebounceMinutes <= 0 {
+		s.Geo400DebounceMinutes = defaults.Geo400DebounceMinutes
+	}
+	return s
+}
+
 func (s settings) validate() error {
+	s = normalizeSettings(s)
 	switch s.Strategy {
 	case strategyQuota, strategyRotate, strategyReset, strategyManual:
 	default:
@@ -57,6 +83,15 @@ func (s settings) validate() error {
 	}
 	if s.FailureThreshold < 2 || s.FailureThreshold > 10 {
 		return errors.New("failure_threshold must be between 2 and 10")
+	}
+	if s.RestDurationHours <= 0 {
+		return errors.New("rest_duration_hours must be positive")
+	}
+	if s.Geo400DebounceMinutes <= 0 {
+		return errors.New("geo400_debounce_minutes must be positive")
+	}
+	if strings.TrimSpace(s.EgressCommand) == "" || strings.TrimSpace(s.EgressTarget) == "" {
+		return errors.New("egress command and target must be configured")
 	}
 	if s.AntigravityGroup != "gemini" && s.AntigravityGroup != "claude_gpt" {
 		return errors.New("antigravity_group must be gemini or claude_gpt")
@@ -95,6 +130,7 @@ func parsePluginConfig(raw []byte) (settings, error) {
 		if cfg.ManualTiers == nil {
 			cfg.ManualTiers = map[string]tierName{}
 		}
+		cfg = normalizeSettings(cfg)
 		return cfg, cfg.validate()
 	}
 	values := map[string]string{}
@@ -132,6 +168,19 @@ func parsePluginConfig(raw []byte) (settings, error) {
 	if value := values["failure_threshold"]; value != "" {
 		cfg.FailureThreshold, _ = strconv.Atoi(value)
 	}
+	if value := values["rest_duration_hours"]; value != "" {
+		cfg.RestDurationHours, _ = strconv.Atoi(value)
+	}
+	if value := values["egress_command"]; value != "" {
+		cfg.EgressCommand = value
+	}
+	if value := values["egress_target"]; value != "" {
+		cfg.EgressTarget = value
+	}
+	if value := values["geo400_debounce_minutes"]; value != "" {
+		cfg.Geo400DebounceMinutes, _ = strconv.Atoi(value)
+	}
+	cfg = normalizeSettings(cfg)
 	return cfg, cfg.validate()
 }
 
@@ -154,4 +203,8 @@ func parseBool(value string) bool {
 
 func (s settings) interval() time.Duration {
 	return time.Duration(s.IntervalMinutes) * time.Minute
+}
+
+func (s settings) restDuration() time.Duration {
+	return time.Duration(s.RestDurationHours) * time.Hour
 }

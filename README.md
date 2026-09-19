@@ -8,8 +8,10 @@ The embedded Management Center page uses named policies instead of numeric score
 
 - Four policies: quota bands, balanced rotation, reset-soon first, and manual primary/backup.
 - Quota bands map `>=50%` to Primary, `20–49%` to Regular, `1–19%` to Backup, and `0%` to Paused.
-- A failed quota probe keeps the last known result until the configured consecutive-failure threshold is reached.
-- Paused credentials use CPA priority `-1` rather than writing `disabled=true`, so a later quota reset can restore them automatically.
+- An Antigravity credential at 0% (or newly paused) records a durable rest deadline, defaulting to 16 hours; early upstream quota recovery does not release it.
+- A failed quota probe keeps the last known result until the configured consecutive-failure threshold is reached, while preserving an active rest deadline.
+- Paused credentials use CPA priority `-1` rather than writing `disabled=true`, so the credential can restore after its rest deadline and a healthy quota result.
+- The usage plugin passively matches Antigravity HTTP 400 region failures and asynchronously invokes the configured egress command with five-minute event deduplication.
 - Credential updates preserve the complete auth document and change only CPA priority.
 - Nested backup files are excluded from scheduling and writeback.
 - Credentials within the same tier remain available to CPA's normal round-robin selection.
@@ -44,9 +46,15 @@ plugins:
       provider_scope: codex|antigravity
       antigravity_group: gemini
       failure_threshold: 3
+      rest_duration_hours: 16
+      egress_command: /usr/local/bin/cpa-egress-cycle
+      egress_target: to-2.5x
+      geo400_debounce_minutes: 5
 ```
 
-Start with `auto_apply: false`, open **Credential Tiers** in Management Center, refresh quota, and review the preview before enabling automatic writeback.
+`rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records whose status is 400 and whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive), then starts `egress_command egress_target` with a 15-second timeout. The command is not run more than once for the same credential/body within `geo400_debounce_minutes`.
+
+Start with `auto_apply: false`, open **Credential Tiers** in Management Center, refresh quota, and review the preview before enabling automatic writeback. The region-400 usage listener is passive and does not depend on the quota probe timer.
 
 ## Policies
 

@@ -63,6 +63,7 @@ const (
 type quotaSnapshot struct {
 	Remaining  *int        `json:"remaining,omitempty"`
 	ResetAt    *time.Time  `json:"reset_at,omitempty"`
+	RestUntil  *time.Time  `json:"rest_until,omitempty"`
 	ObservedAt time.Time   `json:"observed_at"`
 	Status     quotaStatus `json:"status"`
 	FailCount  int         `json:"fail_count,omitempty"`
@@ -110,4 +111,23 @@ type dashboardState struct {
 	Plan         plan           `json:"plan"`
 	History      []historyEntry `json:"history"`
 	NextProbeAt  *time.Time     `json:"next_probe_at,omitempty"`
+}
+
+type usageEvent struct {
+	Provider  string       `json:"Provider"`
+	AuthID    string       `json:"AuthID"`
+	AuthIndex string       `json:"AuthIndex"`
+	Model     string       `json:"Model"`
+	Failed    bool         `json:"Failed"`
+	Failure   usageFailure `json:"Failure"`
+}
+
+type usageFailure struct {
+	StatusCode int    `json:"StatusCode"`
+	Body       string `json:"Body"`
+}
+
+type egressInvocation struct {
+	Command string
+	Args    []string
 }
