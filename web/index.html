@@ -71,6 +71,10 @@
           <label class="field"><span>探测间隔</span><select id="intervalMinutes"><option value="5">每 5 分钟</option><option value="15">每 15 分钟</option><option value="30">每 30 分钟</option><option value="60">每 1 小时</option></select></label>
           <label class="field"><span>连续失败后标记未知</span><select id="failureThreshold"><option value="2">2 次</option><option value="3">3 次</option><option value="5">5 次</option></select></label>
           <label class="field"><span>Antigravity 额度组</span><select id="antigravityGroup"><option value="gemini">Gemini</option><option value="claude_gpt">Claude / GPT</option></select></label>
+          <label class="field"><span>Antigravity 休眠时长（小时）</span><input id="restDurationHours" type="number" min="1" step="1" value="16" inputmode="numeric"></label>
+          <label class="field"><span>地区 400 切网脚本路径</span><input id="egressCommand" type="text" value="/usr/local/bin/cpa-egress-cycle" autocomplete="off"></label>
+          <label class="field"><span>切网脚本执行参数</span><input id="egressTarget" type="text" value="to-2.5x" autocomplete="off"></label>
+          <label class="field"><span>400 防抖时间（分钟）</span><input id="geo400DebounceMinutes" type="number" min="1" step="1" value="5" inputmode="numeric"></label>
           <fieldset class="provider-choice"><legend>参与调度</legend><label><input type="checkbox" value="codex" checked> Codex</label><label><input type="checkbox" value="antigravity" checked> Antigravity</label></fieldset>
         </div>
       </details>
