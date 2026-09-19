@@ -195,12 +195,13 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if !cfg.Geo400EgressEnabled {
 		return nil
 	}
+	if cfg.Geo400ReturnHours > 0 {
+		r.scheduleEgressReturn(now.Add(time.Duration(cfg.Geo400ReturnHours) * time.Hour))
+	}
 	r.egressWG.Add(1)
 	go func(invocation egressInvocation) {
 		defer r.egressWG.Done()
-		commandCtx, cancel := context.WithTimeout(context.Background(), egressCommandTimeout)
-		defer cancel()
-		if err := runEgressCommand(commandCtx, invocation); err != nil {
+		if err := invokeEgressCommand(context.Background(), cfg, invocation.Args[0]); err != nil {
 			alertErr := writeGeoAlert(r, event, cfg, err)
 			summary := "出口切换命令失败：" + safeError(err)
 			if alertErr != nil {

@@ -75,6 +75,12 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 			return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": safeError(err)}), nil
 		}
 		return jsonManagementResponse(http.StatusOK, result), nil
+	case method == http.MethodPost && path == "/egress/return":
+		result, err := r.managementReturnEgress(ctx)
+		if err != nil {
+			return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": safeError(err)}), nil
+		}
+		return jsonManagementResponse(http.StatusOK, result), nil
 	case method == http.MethodPut && path == "/settings":
 		var next settings
 		if err := json.Unmarshal(body, &next); err != nil {

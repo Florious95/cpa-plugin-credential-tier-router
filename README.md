@@ -49,12 +49,14 @@ plugins:
       rest_duration_hours: 16
       egress_command: /usr/local/bin/cpa-egress-cycle
       egress_target: to-2.5x
+      egress_return_target: to-wrap
       geo400_debounce_minutes: 5
       geo400_rest_hours: 24
       geo400_egress_enabled: false
+      geo400_return_hours: 12
 ```
 
-`rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records whose status is 400 and whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive). It immediately saves the affected credential with priority `-1` and records a configurable `geo400_rest_hours` lock (default 24 hours). Optional network switching is disabled by default (`geo400_egress_enabled: false`); when enabled, the plugin starts `egress_command egress_target` with a 15-second timeout. The command is not run more than once for the same credential/body within `geo400_debounce_minutes`. If an enabled command cannot run inside a container, the plugin writes `geo-400-alert.json` beside its state file (or at `CREDENTIAL_TIER_ROUTER_GEO_ALERT_PATH`) for a host-side watcher.
+`rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records whose status is 400 and whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive). It immediately saves the affected credential with priority `-1` and records a configurable `geo400_rest_hours` lock (default 24 hours). Optional network switching is disabled by default (`geo400_egress_enabled: false`); when enabled, the plugin starts `egress_command egress_target` with a 15-second timeout and schedules a return after `geo400_return_hours` (default 12; zero disables automatic return) using `egress_return_target`. The command is not run more than once for the same credential/body within `geo400_debounce_minutes`. If an enabled command cannot run inside a container, the plugin writes `geo-400-alert.json` beside its state file (or at `CREDENTIAL_TIER_ROUTER_GEO_ALERT_PATH`) for a host-side watcher. The Management Center also exposes a one-click return endpoint.
 
 Start with `auto_apply: false`, open **Credential Tiers** in Management Center, refresh quota, and review the preview before enabling automatic writeback. The region-400 usage listener is passive and does not depend on the quota probe timer.
 

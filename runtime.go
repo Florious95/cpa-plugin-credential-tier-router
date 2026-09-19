@@ -29,6 +29,7 @@ type runtime struct {
 	geoEvents map[string]time.Time
 	geoNow    func() time.Time
 	egressWG  sync.WaitGroup
+	wake      chan struct{}
 	closed    bool
 }
 
@@ -42,6 +43,7 @@ func newRuntime(host hostAPI) *runtime {
 		store:     stateStore{path: statePath},
 		done:      make(chan struct{}),
 		geoEvents: make(map[string]time.Time),
+		wake:      make(chan struct{}, 1),
 		geoNow:    time.Now,
 	}
 	if state, err := r.store.load(); err == nil {
@@ -162,27 +164,66 @@ func (r *runtime) restartWorker() {
 	r.cancel = cancel
 	r.done = make(chan struct{})
 	done := r.done
-	cfg := r.state.Settings
 	r.mu.Unlock()
 	go func() {
 		defer close(done)
-		if !cfg.AutoApply {
-			<-ctx.Done()
-			return
-		}
-		timer := time.NewTimer(cfg.interval())
-		defer timer.Stop()
 		for {
-			next := nextProbeAt(time.Now(), cfg)
 			r.mu.Lock()
-			r.nextProbe = &next
+			cfg := normalizeSettings(r.state.Settings)
+			returnAt := r.state.EgressReturnAt
 			r.mu.Unlock()
+
+			var probeTimer *time.Timer
+			var probeC <-chan time.Time
+			if cfg.AutoApply {
+				next := nextProbeAt(time.Now(), cfg)
+				r.mu.Lock()
+				r.nextProbe = &next
+				r.mu.Unlock()
+				probeTimer = time.NewTimer(time.Until(next))
+				probeC = probeTimer.C
+			} else {
+				r.mu.Lock()
+				r.nextProbe = nil
+				r.mu.Unlock()
+			}
+
+			var returnTimer *time.Timer
+			var returnC <-chan time.Time
+			if returnAt != nil {
+				delay := time.Until(*returnAt)
+				if delay < 0 {
+					delay = 0
+				}
+				returnTimer = time.NewTimer(delay)
+				returnC = returnTimer.C
+			}
 			select {
 			case <-ctx.Done():
+				if probeTimer != nil {
+					probeTimer.Stop()
+				}
+				if returnTimer != nil {
+					returnTimer.Stop()
+				}
 				return
-			case <-timer.C:
+			case <-r.wake:
+				if probeTimer != nil {
+					probeTimer.Stop()
+				}
+				if returnTimer != nil {
+					returnTimer.Stop()
+				}
+			case <-returnC:
+				if probeTimer != nil {
+					probeTimer.Stop()
+				}
+				_ = r.maybeReturnEgress(context.Background(), time.Now().UTC())
+			case <-probeC:
+				if returnTimer != nil {
+					returnTimer.Stop()
+				}
 				_, _ = r.run(context.Background(), true, "自动调度")
-				timer.Reset(cfg.interval())
 			}
 		}
 	}()
@@ -232,6 +273,7 @@ func managementRegistration() map[string]any {
 			{"Method": "POST", "Path": "/plugins/" + pluginID + "/preview"},
 			{"Method": "POST", "Path": "/plugins/" + pluginID + "/apply"},
 			{"Method": "PUT", "Path": "/plugins/" + pluginID + "/settings"},
+			{"Method": "POST", "Path": "/plugins/" + pluginID + "/egress/return"},
 		},
 		"resources": []map[string]string{{"Path": "/status", "Menu": "Credential Tiers", "Description": "Manage Codex and Antigravity credential tiers."}},
 	}
@@ -243,6 +285,7 @@ func (r *runtime) dashboard(ctx context.Context) (dashboardState, error) {
 	cfg := r.state.Settings
 	history := append([]historyEntry(nil), r.state.History...)
 	next := r.nextProbe
+	returnAt := r.state.EgressReturnAt
 	r.mu.Unlock()
 	if len(latest.Credentials) == 0 {
 		var err error
@@ -251,7 +294,7 @@ func (r *runtime) dashboard(ctx context.Context) (dashboardState, error) {
 			return dashboardState{}, err
 		}
 	}
-	return dashboardState{PluginStatus: "ready", Settings: cfg, Plan: latest, History: history, NextProbeAt: next}, nil
+	return dashboardState{PluginStatus: "ready", Settings: cfg, Plan: latest, History: history, NextProbeAt: next, EgressReturnAt: returnAt}, nil
 }
 
 func (r *runtime) inspect(ctx context.Context) (plan, error) {
@@ -466,6 +509,9 @@ func (r *runtime) updateSettings(next settings) error {
 	}
 	r.mu.Lock()
 	r.state.Settings = next
+	if next.Geo400ReturnHours == 0 {
+		r.state.EgressReturnAt = nil
+	}
 	r.latest = plan{}
 	state := r.state
 	r.mu.Unlock()

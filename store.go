@@ -23,6 +23,14 @@ func (s stateStore) load() (persistedState, error) {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return persistedState{}, err
 	}
+	var wire struct {
+		Settings map[string]json.RawMessage `json:"settings"`
+	}
+	if err := json.Unmarshal(raw, &wire); err == nil {
+		if _, exists := wire.Settings["geo400_return_hours"]; !exists {
+			state.Settings.Geo400ReturnHours = defaultSettings().Geo400ReturnHours
+		}
+	}
 	if state.Quota == nil {
 		state.Quota = map[string]quotaSnapshot{}
 	}

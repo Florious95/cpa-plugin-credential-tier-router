@@ -73,10 +73,13 @@
           <label class="field"><span>Antigravity 额度组</span><select id="antigravityGroup"><option value="gemini">Gemini</option><option value="claude_gpt">Claude / GPT</option></select></label>
           <label class="field"><span>Antigravity 休眠时长（小时）</span><input id="restDurationHours" type="number" min="1" step="1" value="16" inputmode="numeric"></label>
           <label class="field"><span>地区 400 切网脚本路径</span><input id="egressCommand" type="text" value="/usr/local/bin/cpa-egress-cycle" autocomplete="off"></label>
-          <label class="field"><span>切网脚本执行参数</span><input id="egressTarget" type="text" value="to-2.5x" autocomplete="off"></label>
+          <label class="field"><span>切至备用出口参数</span><input id="egressTarget" type="text" value="to-2.5x" autocomplete="off"></label>
+          <label class="field"><span>切回主路出口参数</span><input id="egressReturnTarget" type="text" value="to-wrap" autocomplete="off"></label>
+          <label class="field"><span>自动切回等待时长（小时，0 表示关闭）</span><input id="geo400ReturnHours" type="number" min="0" step="1" value="12" inputmode="numeric"></label>
           <label class="field"><span>400 防抖时间（分钟）</span><input id="geo400DebounceMinutes" type="number" min="1" step="1" value="5" inputmode="numeric"></label>
           <label class="field"><span>地区 400 账号休眠（小时）</span><input id="geo400RestHours" type="number" min="1" step="1" value="24" inputmode="numeric"></label>
-          <label class="field"><span>地区 400 自动切网</span><input id="geo400EgressEnabled" type="checkbox"></label>
+          <label class="switch-field"><span>地区 400 自动切网</span><input id="geo400EgressEnabled" type="checkbox" role="switch"><span class="switch" aria-hidden="true"></span></label>
+          <div class="field"><span>出口控制</span><button class="button ghost" id="egressReturnButton" type="button">🔄 立即切回主路</button><small id="egressReturnStatus">未安排自动切回</small></div>
           <fieldset class="provider-choice"><legend>参与调度</legend><label><input type="checkbox" value="codex" checked> Codex</label><label><input type="checkbox" value="antigravity" checked> Antigravity</label></fieldset>
         </div>
       </details>
