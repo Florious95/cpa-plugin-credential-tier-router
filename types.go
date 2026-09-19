@@ -100,11 +100,19 @@ type historyEntry struct {
 	Errors  int       `json:"errors"`
 }
 
+// Membership is authoritative; auth-file priorities are its recoverable projection.
+// A present provider with an empty Members list is initialized, not a bootstrap.
+type activePoolState struct {
+	Members    []string `json:"members"`
+	Generation uint64   `json:"generation"`
+}
+
 type persistedState struct {
-	Settings       settings                 `json:"settings"`
-	Quota          map[string]quotaSnapshot `json:"quota"`
-	History        []historyEntry           `json:"history"`
-	EgressReturnAt *time.Time               `json:"egress_return_at,omitempty"`
+	ActivePool     map[string]activePoolState `json:"active_pool,omitempty"`
+	Settings       settings                   `json:"settings"`
+	Quota          map[string]quotaSnapshot   `json:"quota"`
+	History        []historyEntry             `json:"history"`
+	EgressReturnAt *time.Time                 `json:"egress_return_at,omitempty"`
 }
 
 type dashboardState struct {

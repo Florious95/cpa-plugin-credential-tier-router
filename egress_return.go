@@ -24,9 +24,8 @@ func (r *runtime) scheduleEgressReturn(at time.Time) {
 		r.state.EgressReturnAt = &at
 	}
 	r.egressRetryAt = nil
-	state := r.state
 	r.mu.Unlock()
-	_ = r.store.save(state)
+	_ = r.persistState()
 	select {
 	case r.wake <- struct{}{}:
 	default:
@@ -53,10 +52,7 @@ func (r *runtime) returnEgress(ctx context.Context, trigger string) error {
 	} else {
 		r.recordHistory(trigger, 0, 0, "已切回主路出口 "+cfg.EgressReturnTarget)
 	}
-	r.mu.Lock()
-	state := r.state
-	r.mu.Unlock()
-	if saveErr := r.store.save(state); saveErr != nil && err == nil {
+	if saveErr := r.persistState(); saveErr != nil && err == nil {
 		return fmt.Errorf("save return state: %w", saveErr)
 	}
 	return err
