@@ -29,6 +29,26 @@ func TestSettingsPanelExposesRestAndEgressControls(t *testing.T) {
 	}
 }
 
+func TestPreviewUsesPostMethod(t *testing.T) {
+	app := readWebAssetForTest(t, "web/app.js")
+	if !strings.Contains(app, "current.plan=await api('/preview',{method:'POST'})") {
+		t.Fatal("preview must call the POST /preview management route")
+	}
+}
+
+func TestManagementAPIReportsNonJSONBodiesWithHTTPContext(t *testing.T) {
+	app := readWebAssetForTest(t, "web/app.js")
+	for _, snippet := range []string{
+		"var body=await response.text()",
+		"JSON.parse(body)",
+		"CPA 返回了无效响应（HTTP '+response.status+')",
+	} {
+		if !strings.Contains(app, snippet) {
+			t.Errorf("app.js missing non-JSON response handling marker %q", snippet)
+		}
+	}
+}
+
 func TestSettingsPanelRoundTripsRuntimePolicyFields(t *testing.T) {
 	app := readWebAssetForTest(t, "web/app.js")
 	for _, snippet := range []string{

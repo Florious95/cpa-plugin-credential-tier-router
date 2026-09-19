@@ -75,14 +75,27 @@ func (r *runtime) handle(ctx context.Context, method string, request []byte) []b
 		}
 		return success(map[string]any{})
 	case "management.handle":
-		response, err := r.handleManagement(ctx, request)
-		if err != nil {
-			return failure("invalid_request", err.Error(), false)
-		}
-		return success(response)
+		return r.handleManagementCall(ctx, request)
 	default:
 		return failure("invalid_request", fmt.Sprintf("unsupported method %q", method), false)
 	}
+}
+
+// Management failures must remain HTTP responses. A plugin failure envelope is
+// translated by CPA into a plain 502 body, which breaks JSON clients.
+func (r *runtime) handleManagementCall(ctx context.Context, request []byte) (response []byte) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			response = success(jsonManagementResponse(500, map[string]string{
+				"error": safeError(fmt.Errorf("management handler panic: %v", recovered)),
+			}))
+		}
+	}()
+	management, err := r.handleManagement(ctx, request)
+	if err != nil {
+		return success(jsonManagementResponse(500, map[string]string{"error": safeError(err)}))
+	}
+	return success(management)
 }
 
 func decodeLifecycleConfig(raw []byte) (settings, error) {
