@@ -6,7 +6,7 @@
       "name": "Credential Tiers (16h Rest & Geo-400)",
       "description": "Manages Codex and Antigravity credentials with 16h human-like rest window and passive geo-restriction 400 egress switching.",
       "author": "Florious95",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "repository": "https://github.com/Florious95/cpa-plugin-credential-tier-router",
       "homepage": "https://github.com/Florious95/cpa-plugin-credential-tier-router",
       "license": "MIT",
