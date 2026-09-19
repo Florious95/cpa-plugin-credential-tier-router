@@ -7,11 +7,11 @@ import (
 )
 
 func TestConfiguredRestAndEgressSettings(t *testing.T) {
-	cfg, err := parsePluginConfig([]byte("rest_duration_hours: 20\negress_command: /opt/cycle\negress_target: to-2.5x\ngeo400_debounce_minutes: 7\n"))
+	cfg, err := parsePluginConfig([]byte("rest_duration_hours: 20\negress_command: /opt/cycle\negress_target: to-2.5x\ngeo400_debounce_minutes: 7\ngeo400_rest_hours: 18\ngeo400_egress_enabled: true\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RestDurationHours != 20 || cfg.EgressCommand != "/opt/cycle" || cfg.EgressTarget != "to-2.5x" || cfg.Geo400DebounceMinutes != 7 {
+	if cfg.RestDurationHours != 20 || cfg.EgressCommand != "/opt/cycle" || cfg.EgressTarget != "to-2.5x" || cfg.Geo400DebounceMinutes != 7 || cfg.Geo400RestHours != 18 || !cfg.Geo400EgressEnabled {
 		t.Fatalf("unexpected configured settings: %+v", cfg)
 	}
 }
