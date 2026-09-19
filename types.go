@@ -61,13 +61,14 @@ const (
 )
 
 type quotaSnapshot struct {
-	Remaining  *int        `json:"remaining,omitempty"`
-	ResetAt    *time.Time  `json:"reset_at,omitempty"`
-	RestUntil  *time.Time  `json:"rest_until,omitempty"`
-	ObservedAt time.Time   `json:"observed_at"`
-	Status     quotaStatus `json:"status"`
-	FailCount  int         `json:"fail_count,omitempty"`
-	LastError  string      `json:"last_error,omitempty"`
+	Remaining   *int        `json:"remaining,omitempty"`
+	ResetAt     *time.Time  `json:"reset_at,omitempty"`
+	RestUntil   *time.Time  `json:"rest_until,omitempty"`
+	ManagedRest bool        `json:"managed_rest,omitempty"`
+	ObservedAt  time.Time   `json:"observed_at"`
+	Status      quotaStatus `json:"status"`
+	FailCount   int         `json:"fail_count,omitempty"`
+	LastError   string      `json:"last_error,omitempty"`
 }
 
 type credentialState struct {

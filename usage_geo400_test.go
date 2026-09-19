@@ -69,11 +69,14 @@ func TestUsageGeo400DowngradesCredential(t *testing.T) {
 	if got := int(saved["priority"].(float64)); got != -1 {
 		t.Fatalf("saved priority=%d, want -1", got)
 	}
+	if saved["disabled"] != true {
+		t.Fatalf("saved disabled=%v, want true", saved["disabled"])
+	}
 	if got := saved["proxy_url"]; got != "socks5://old" {
 		t.Fatalf("proxy_url changed unexpectedly: %v", got)
 	}
 	quota := r.state.Quota["idx-1"]
-	wantUntil := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	wantUntil := time.Date(2026, 9, 19, 14, 0, 0, 0, time.UTC)
 	if quota.RestUntil == nil || !quota.RestUntil.Equal(wantUntil) {
 		t.Fatalf("RestUntil=%v, want %v", quota.RestUntil, wantUntil)
 	}
@@ -98,6 +101,7 @@ func TestUsageGeo400WritesFallbackAlertWhenCommandFails(t *testing.T) {
 	r.store.path = filepath.Join(t.TempDir(), "state", "state.json")
 	r.state.Settings = defaultSettings()
 	r.state.Settings.Geo400EgressEnabled = true
+	r.state.Settings.Geo400AccountThreshold = 1
 	body := `Error: 400: {"code":400,"message":"User location is not supported for the API use.","status":"FAILED_PRECONDITION"}`
 	raw, err := json.Marshal(usageEvent{Provider: "antigravity", AuthIndex: "idx-1", Failed: true, Failure: usageFailure{StatusCode: 400, Body: body}})
 	if err != nil {
@@ -148,6 +152,7 @@ func TestUsageGeo400RunsConfiguredCommandAndDebounces(t *testing.T) {
 	r.state.Settings.EgressCommand = "/usr/local/bin/cpa-egress-cycle"
 	r.state.Settings.EgressTarget = "to-test"
 	r.state.Settings.Geo400DebounceMinutes = 5
+	r.state.Settings.Geo400AccountThreshold = 1
 	r.state.Settings.Geo400EgressEnabled = true
 	r.geoNow = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
 	body := `{"error":{"status":"FAILED_PRECONDITION","message":"User location is not supported for the API use."}}`

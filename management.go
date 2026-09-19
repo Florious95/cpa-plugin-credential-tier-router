@@ -86,6 +86,18 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 		if err := json.Unmarshal(body, &next); err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": "设置格式无效"}), nil
 		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err == nil {
+			r.mu.Lock()
+			current := normalizeSettings(r.state.Settings)
+			r.mu.Unlock()
+			if _, exists := fields["active_pool_size"]; !exists {
+				next.ActivePoolSize = current.ActivePoolSize
+			}
+			if _, exists := fields["geo400_account_threshold"]; !exists {
+				next.Geo400AccountThreshold = current.Geo400AccountThreshold
+			}
+		}
 		if next.ManualTiers == nil {
 			next.ManualTiers = map[string]tierName{}
 		}
