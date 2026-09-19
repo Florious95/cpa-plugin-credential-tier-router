@@ -44,6 +44,7 @@ func (r *runtime) pauseGeoCredential(ctx context.Context, event usageEvent) erro
 		return fmt.Errorf("decode geo-400 credential %s: %w", index, err)
 	}
 	root["priority"] = -1
+	root["disabled"] = true
 	metadata := map[string]any{}
 	if existing, ok := root["credential_tier_router"].(map[string]any); ok {
 		metadata = existing
@@ -83,6 +84,7 @@ func (r *runtime) markGeoRest(event usageEvent, now time.Time, duration time.Dur
 		until = *quota.RestUntil
 	}
 	quota.RestUntil = &until
+	quota.ManagedRest = true
 	quota.ObservedAt = now
 	r.state.Quota[index] = quota
 	return until
@@ -182,6 +184,8 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if !r.acceptGeoEvent(key, now, window) {
 		return nil
 	}
+	account := firstText(event.AuthIndex, event.AuthID)
+	accountCount := r.recordGeoAccount(account, now, window)
 
 	pauseErr := r.pauseGeoCredential(ctx, event)
 	restUntil := r.markGeoRest(event, now, time.Duration(cfg.Geo400RestHours)*time.Hour)
@@ -191,8 +195,13 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 		r.markLatestGeoPaused(event, restUntil)
 		r.recordHistory("地区400", 1, 0, fmt.Sprintf("凭证 %s 命中地区限制，已降权并休眠 %d 小时", firstText(event.AuthIndex, event.AuthID), cfg.Geo400RestHours))
 	}
+	if cfg.ActivePoolSize > 0 && pauseErr == nil {
+		if err := r.reconcileActivePool(ctx, "地区400补位"); err != nil {
+			r.recordHistory("地区400", 0, 1, "活跃池补位失败："+safeError(err))
+		}
+	}
 	r.persistState()
-	if !cfg.Geo400EgressEnabled {
+	if !cfg.Geo400EgressEnabled || accountCount < cfg.Geo400AccountThreshold || !r.acceptGeoEgress(now, window) {
 		return nil
 	}
 	if cfg.Geo400ReturnHours > 0 {
@@ -236,6 +245,35 @@ func (r *runtime) acceptGeoEvent(key string, now time.Time, window time.Duration
 		return false
 	}
 	r.geoEvents[key] = now
+	return true
+}
+
+func (r *runtime) recordGeoAccount(account string, now time.Time, window time.Duration) int {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return 0
+	}
+	r.geoMu.Lock()
+	defer r.geoMu.Unlock()
+	if r.geoAccounts == nil {
+		r.geoAccounts = make(map[string]time.Time)
+	}
+	for knownAccount, at := range r.geoAccounts {
+		if !at.Add(window).After(now) {
+			delete(r.geoAccounts, knownAccount)
+		}
+	}
+	r.geoAccounts[account] = now
+	return len(r.geoAccounts)
+}
+
+func (r *runtime) acceptGeoEgress(now time.Time, window time.Duration) bool {
+	r.geoMu.Lock()
+	defer r.geoMu.Unlock()
+	if !r.geoEgressAt.IsZero() && r.geoEgressAt.Add(window).After(now) {
+		return false
+	}
+	r.geoEgressAt = now
 	return true
 }
 

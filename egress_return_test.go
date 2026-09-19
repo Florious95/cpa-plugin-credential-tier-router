@@ -11,8 +11,8 @@ import (
 
 func TestEgressReturnDefaultsAndValidation(t *testing.T) {
 	cfg := defaultSettings()
-	if cfg.EgressReturnTarget != "to-wrap" || cfg.Geo400ReturnHours != 12 {
-		t.Fatalf("defaults target=%q hours=%d, want to-wrap/12", cfg.EgressReturnTarget, cfg.Geo400ReturnHours)
+	if cfg.EgressReturnTarget != "to-wrap" || cfg.Geo400ReturnHours != 12 || cfg.Geo400RestHours != 2 || cfg.Geo400AccountThreshold != 2 {
+		t.Fatalf("defaults target=%q return=%d rest=%d threshold=%d, want to-wrap/12/2/2", cfg.EgressReturnTarget, cfg.Geo400ReturnHours, cfg.Geo400RestHours, cfg.Geo400AccountThreshold)
 	}
 	parsed, err := parsePluginConfig([]byte("egress_return_target: office\ngeo400_return_hours: 0\n"))
 	if err != nil {

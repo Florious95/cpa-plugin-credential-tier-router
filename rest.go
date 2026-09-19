@@ -23,6 +23,7 @@ func applyAntigravityRest(cfg *settings, file authFile, current tierName, quota 
 		// An expired rest is released here. A recovered quota must not be
 		// immediately re-paused merely because the persisted tier is still paused.
 		quota.RestUntil = nil
+		quota.ManagedRest = false
 		if !exhausted {
 			return false
 		}
@@ -33,5 +34,6 @@ func applyAntigravityRest(cfg *settings, file authFile, current tierName, quota 
 
 	until := now.Add(cfg.restDuration())
 	quota.RestUntil = &until
+	quota.ManagedRest = true
 	return true
 }

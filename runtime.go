@@ -17,20 +17,22 @@ import (
 type runtime struct {
 	host hostAPI
 
-	mu        sync.Mutex
-	runMu     sync.Mutex
-	state     persistedState
-	latest    plan
-	store     stateStore
-	cancel    context.CancelFunc
-	done      chan struct{}
-	nextProbe *time.Time
-	geoMu     sync.Mutex
-	geoEvents map[string]time.Time
-	geoNow    func() time.Time
-	egressWG  sync.WaitGroup
-	wake      chan struct{}
-	closed    bool
+	mu          sync.Mutex
+	runMu       sync.Mutex
+	state       persistedState
+	latest      plan
+	store       stateStore
+	cancel      context.CancelFunc
+	done        chan struct{}
+	nextProbe   *time.Time
+	geoMu       sync.Mutex
+	geoEvents   map[string]time.Time
+	geoAccounts map[string]time.Time
+	geoEgressAt time.Time
+	geoNow      func() time.Time
+	egressWG    sync.WaitGroup
+	wake        chan struct{}
+	closed      bool
 }
 
 func newRuntime(host hostAPI) *runtime {
@@ -39,12 +41,13 @@ func newRuntime(host hostAPI) *runtime {
 		statePath = filepath.Join("credential-tier-router", "state.json")
 	}
 	r := &runtime{
-		host:      host,
-		store:     stateStore{path: statePath},
-		done:      make(chan struct{}),
-		geoEvents: make(map[string]time.Time),
-		wake:      make(chan struct{}, 1),
-		geoNow:    time.Now,
+		host:        host,
+		store:       stateStore{path: statePath},
+		done:        make(chan struct{}),
+		geoEvents:   make(map[string]time.Time),
+		geoAccounts: make(map[string]time.Time),
+		wake:        make(chan struct{}, 1),
+		geoNow:      time.Now,
 	}
 	if state, err := r.store.load(); err == nil {
 		r.state = state
@@ -257,8 +260,8 @@ func registrationResult() map[string]any {
 		"metadata": map[string]any{
 			"Name":             "Credential Tiers",
 			"Version":          pluginVersion,
-			"Author":           "William-zgx",
-			"GitHubRepository": "https://github.com/William-zgx/cpa-plugin-credential-tier-router",
+			"Author":           "Florious95",
+			"GitHubRepository": "https://github.com/Florious95/cpa-plugin-credential-tier-router",
 			"Description":      "Routes Codex and Antigravity credentials through clear primary, regular, backup, and paused tiers.",
 			"ConfigFields":     []any{},
 		},
@@ -355,22 +358,37 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 		if provider == "" || !selectedProviders[provider] {
 			continue
 		}
-		current := tierFromPriority(file.Priority, file.Disabled)
 		previousQuota := cache[file.AuthIndex]
+		restExpired := provider == "antigravity" && previousQuota.ManagedRest && previousQuota.RestUntil != nil && !previousQuota.RestUntil.After(now)
+		effectiveDisabled := file.Disabled && !restExpired
+		current := tierFromPriority(file.Priority, effectiveDisabled)
+		if restExpired && current == tierPaused {
+			// Let a recovered managed pause re-enter normal tier calculation;
+			// otherwise applyAntigravityRest would immediately start a new rest.
+			current = tierRegular
+		}
 		quota, probeErr := probeCredential(ctx, r.host, file, cfg, now)
 		if probeErr != nil {
 			quota = failedQuota(previousQuota, probeErr, cfg.FailureThreshold, now)
 		}
 		inheritAntigravityRest(&quota, previousQuota, now)
-		applyAntigravityRest(&cfg, file, current, &quota, now)
+		if !effectiveDisabled {
+			applyAntigravityRest(&cfg, file, current, &quota, now)
+		}
 		cache[file.AuthIndex] = quota
-		proposed, reason := chooseTier(cfg, file, current, quota, now)
-		changed := proposed != current && !file.Unavailable && !(file.Disabled && proposed != tierPaused)
+		planningFile := file
+		planningFile.Disabled = effectiveDisabled
+		proposed, reason := chooseTier(cfg, planningFile, current, quota, now)
+		changed := proposed != current && !file.Unavailable
 		credentials = append(credentials, credentialState{
 			Provider: provider, Account: maskAccount(firstText(file.Email, file.Account, file.Name)), AuthIndex: file.AuthIndex,
 			CurrentTier: current, ProposedTier: proposed, Reason: reason, Quota: quota,
-			Disabled: file.Disabled, Unavailable: file.Unavailable, Changed: changed,
+			Disabled: effectiveDisabled, Unavailable: file.Unavailable, Changed: changed,
 		})
+	}
+	applyActivePoolCap(&cfg, credentials, now)
+	for index := range credentials {
+		credentials[index].Changed = credentials[index].ProposedTier != credentials[index].CurrentTier && !credentials[index].Unavailable
 	}
 	sortCredentials(credentials)
 	result := plan{GeneratedAt: now, Strategy: cfg.Strategy, Credentials: credentials}
@@ -483,11 +501,9 @@ func (r *runtime) applyPlan(ctx context.Context, files []authFile, result plan) 
 			return err
 		}
 		root["priority"] = credential.ProposedTier.priority()
-		// Paused is implemented as a non-selectable priority, not a hard disable.
-		// That lets a depleted credential automatically return after quota reset.
-		if _, exists := root["disabled"]; !exists {
-			root["disabled"] = false
-		}
+		// A managed pause must be runtime-ineligible so CPA can evict any
+		// session-affinity binding. Promotion writes the inverse atomically.
+		root["disabled"] = credential.ProposedTier == tierPaused
 		root["credential_tier_router"] = map[string]any{
 			"managed": true, "tier": credential.ProposedTier, "updated_at": time.Now().UTC().Format(time.RFC3339),
 		}
