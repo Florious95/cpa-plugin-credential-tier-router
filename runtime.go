@@ -30,9 +30,14 @@ type runtime struct {
 	geoAccounts map[string]time.Time
 	geoEgressAt time.Time
 	geoNow      func() time.Time
-	egressWG    sync.WaitGroup
-	wake        chan struct{}
-	closed      bool
+
+	// quotaRevision prevents an in-flight probe from overwriting a newer
+	// passive geo-400 pause.
+	quotaRevision uint64
+	egressRetryAt *time.Time
+	egressWG      sync.WaitGroup
+	wake          chan struct{}
+	closed        bool
 }
 
 func newRuntime(host hostAPI) *runtime {
@@ -174,6 +179,7 @@ func (r *runtime) restartWorker() {
 			r.mu.Lock()
 			cfg := normalizeSettings(r.state.Settings)
 			returnAt := r.state.EgressReturnAt
+			retryAt := r.egressRetryAt
 			r.mu.Unlock()
 
 			var probeTimer *time.Timer
@@ -194,7 +200,11 @@ func (r *runtime) restartWorker() {
 			var returnTimer *time.Timer
 			var returnC <-chan time.Time
 			if returnAt != nil {
-				delay := time.Until(*returnAt)
+				due := *returnAt
+				if retryAt != nil && retryAt.After(due) {
+					due = *retryAt
+				}
+				delay := time.Until(due)
 				if delay < 0 {
 					delay = 0
 				}
@@ -346,6 +356,7 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 	r.mu.Lock()
 	cfg := r.state.Settings
 	cache := cloneQuota(r.state.Quota)
+	startRevision := r.quotaRevision
 	r.mu.Unlock()
 	selectedProviders := providerSet(cfg.Providers)
 	now := time.Now().UTC()
@@ -375,11 +386,20 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 		if !effectiveDisabled {
 			applyAntigravityRest(&cfg, file, current, &quota, now)
 		}
-		cache[file.AuthIndex] = quota
 		planningFile := file
 		planningFile.Disabled = effectiveDisabled
 		proposed, reason := chooseTier(cfg, planningFile, current, quota, now)
-		changed := proposed != current && !file.Unavailable
+		// Manual pauses are a managed rest as well, even when the latest quota
+		// is healthy. This gives them the same expiry/recovery semantics.
+		if provider == "antigravity" && cfg.Strategy == strategyManual && proposed == tierPaused && quota.RestUntil == nil {
+			if applyAntigravityRest(&cfg, file, tierPaused, &quota, now) {
+				reason = fmt.Sprintf("手动暂停，休眠至 %s", quota.RestUntil.UTC().Format(time.RFC3339))
+			}
+		}
+		needsPauseWrite := proposed == tierPaused && !file.Disabled && quota.RestUntil != nil && quota.RestUntil.After(now)
+		needsRestoreWrite := proposed != tierPaused && file.Disabled && restExpired
+		changed := (proposed != current || needsPauseWrite || needsRestoreWrite) && !file.Unavailable
+		cache[file.AuthIndex] = quota
 		credentials = append(credentials, credentialState{
 			Provider: provider, Account: maskAccount(firstText(file.Email, file.Account, file.Name)), AuthIndex: file.AuthIndex,
 			CurrentTier: current, ProposedTier: proposed, Reason: reason, Quota: quota,
@@ -387,9 +407,6 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 		})
 	}
 	applyActivePoolCap(&cfg, credentials, now)
-	for index := range credentials {
-		credentials[index].Changed = credentials[index].ProposedTier != credentials[index].CurrentTier && !credentials[index].Unavailable
-	}
 	sortCredentials(credentials)
 	result := plan{GeneratedAt: now, Strategy: cfg.Strategy, Credentials: credentials}
 	for _, credential := range credentials {
@@ -401,6 +418,36 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 		}
 	}
 	if apply {
+		// A passive geo event may arrive while an upstream probe is blocked. Do
+		// not apply the stale plan over its newer hard pause.
+		r.mu.Lock()
+		revisionChanged := r.quotaRevision != startRevision
+		newQuota := cloneQuota(r.state.Quota)
+		r.mu.Unlock()
+		if revisionChanged {
+			for index := range result.Credentials {
+				credential := &result.Credentials[index]
+				quota, ok := newQuota[credential.AuthIndex]
+				if !ok || !quota.ManagedRest || quota.RestUntil == nil || !quota.RestUntil.After(now) {
+					continue
+				}
+				credential.Quota = quota
+				credential.ProposedTier = tierPaused
+				credential.Reason = fmt.Sprintf("地区400，休眠至 %s", quota.RestUntil.UTC().Format(time.RFC3339))
+				credential.Changed = !credential.Unavailable
+			}
+			applyActivePoolCap(&cfg, result.Credentials, now)
+			result.Changes = 0
+			result.Unknown = 0
+			for _, credential := range result.Credentials {
+				if credential.Changed {
+					result.Changes++
+				}
+				if credential.Quota.Status == quotaUnknown {
+					result.Unknown++
+				}
+			}
+		}
 		if err := r.applyPlan(ctx, files, result); err != nil {
 			r.recordHistory(trigger, result.Changes, 1, "应用失败："+safeError(err))
 			return plan{}, err
@@ -408,6 +455,14 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 		r.recordHistory(trigger, result.Changes, result.Unknown, historySummary(result))
 	}
 	r.mu.Lock()
+	// Preserve a newer passive pause committed while this run was probing.
+	if r.quotaRevision != startRevision {
+		for authIndex, quota := range r.state.Quota {
+			if quota.ManagedRest {
+				cache[authIndex] = quota
+			}
+		}
+	}
 	r.state.Quota = cache
 	r.latest = result
 	state := r.state
@@ -432,11 +487,12 @@ func failedQuota(previous quotaSnapshot, probeErr error, threshold int, now time
 		status = quotaUnknown
 	}
 	return quotaSnapshot{
-		ObservedAt: now,
-		Status:     status,
-		FailCount:  failCount,
-		LastError:  message,
-		RestUntil:  previous.RestUntil,
+		ObservedAt:  now,
+		Status:      status,
+		FailCount:   failCount,
+		LastError:   message,
+		RestUntil:   previous.RestUntil,
+		ManagedRest: previous.ManagedRest,
 	}
 }
 

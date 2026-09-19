@@ -14,26 +14,41 @@ func applyActivePoolCap(cfg *settings, credentials []credentialState, now time.T
 		return
 	}
 	groups := make(map[string][]int)
+	candidates := make(map[string][]int)
 	for index := range credentials {
 		credential := &credentials[index]
-		if !poolCandidate(*credential, now) {
-			continue
-		}
 		groups[credential.Provider] = append(groups[credential.Provider], index)
+		if poolCandidate(*credential, now) {
+			candidates[credential.Provider] = append(candidates[credential.Provider], index)
+		}
 	}
-	for _, indexes := range groups {
-		sort.SliceStable(indexes, func(left, right int) bool {
-			return poolCandidateBefore(*cfg, credentials[indexes[left]], credentials[indexes[right]])
+	for provider, indexes := range groups {
+		eligible := candidates[provider]
+		sort.SliceStable(eligible, func(left, right int) bool {
+			return poolCandidateBefore(*cfg, credentials[eligible[left]], credentials[eligible[right]])
 		})
-		for rank, index := range indexes {
+		selected := make(map[int]bool, min(cfg.ActivePoolSize, len(eligible)))
+		for rank, index := range eligible {
 			credential := &credentials[index]
 			if rank < cfg.ActivePoolSize {
 				credential.ProposedTier = tierPrimary
 				credential.Reason = "活跃池前列"
+				selected[index] = true
 			} else {
 				credential.ProposedTier = tierBackup
 				credential.Reason = "活跃池后备"
 			}
+			credential.Changed = credential.ProposedTier != credential.CurrentTier
+		}
+		// A failed/unknown probe is not eligible for the active pool. Demote a
+		// stale primary as well, otherwise a probe failure could exceed the cap.
+		for _, index := range indexes {
+			credential := &credentials[index]
+			if selected[index] || credential.Unavailable || credential.ProposedTier != tierPrimary {
+				continue
+			}
+			credential.ProposedTier = tierBackup
+			credential.Reason = "活跃池外后备"
 			credential.Changed = credential.ProposedTier != credential.CurrentTier
 		}
 	}

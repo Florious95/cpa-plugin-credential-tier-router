@@ -87,6 +87,7 @@ func (r *runtime) markGeoRest(event usageEvent, now time.Time, duration time.Dur
 	quota.ManagedRest = true
 	quota.ObservedAt = now
 	r.state.Quota[index] = quota
+	r.quotaRevision++
 	return until
 }
 
@@ -187,8 +188,10 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	account := firstText(event.AuthIndex, event.AuthID)
 	accountCount := r.recordGeoAccount(account, now, window)
 
-	pauseErr := r.pauseGeoCredential(ctx, event)
+	// Record ownership before the host write. If a quota probe is in flight,
+	// its commit path will see the revision and preserve this pause.
 	restUntil := r.markGeoRest(event, now, time.Duration(cfg.Geo400RestHours)*time.Hour)
+	pauseErr := r.pauseGeoCredential(ctx, event)
 	if pauseErr != nil {
 		r.recordHistory("地区400", 0, 1, fmt.Sprintf("凭证 %s 命中地区限制，但即时降权失败：%s", firstText(event.AuthIndex, event.AuthID), safeError(pauseErr)))
 	} else {
@@ -241,9 +244,9 @@ func (r *runtime) acceptGeoEvent(key string, now time.Time, window time.Duration
 			delete(r.geoEvents, knownKey)
 		}
 	}
-	if previous, ok := r.geoEvents[key]; ok && previous.Add(window).After(now) {
-		return false
-	}
+	// Repeated failures from one account are meaningful: they refresh that
+	// account's position in the sliding window. Global egress debounce below
+	// still prevents repeated switch commands.
 	r.geoEvents[key] = now
 	return true
 }
