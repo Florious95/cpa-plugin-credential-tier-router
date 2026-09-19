@@ -59,7 +59,7 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 			return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": safeError(err)}), nil
 		}
 		return jsonManagementResponse(http.StatusOK, state), nil
-	case method == http.MethodPost && path == "/preview":
+	case (method == http.MethodPost || method == http.MethodGet) && path == "/preview":
 		result, err := r.run(ctx, false, "手动预览")
 		if err != nil {
 			status := http.StatusInternalServerError

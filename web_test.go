@@ -29,6 +29,13 @@ func TestSettingsPanelExposesRestAndEgressControls(t *testing.T) {
 	}
 }
 
+func TestPreviewUsesPostMethod(t *testing.T) {
+	app := readWebAssetForTest(t, "web/app.js")
+	if !strings.Contains(app, "current.plan=await api('/preview',{method:'POST'})") {
+		t.Fatal("preview must call the POST /preview management route")
+	}
+}
+
 func TestManagementAPIReportsNonJSONBodiesWithHTTPContext(t *testing.T) {
 	app := readWebAssetForTest(t, "web/app.js")
 	for _, snippet := range []string{

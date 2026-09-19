@@ -77,6 +77,19 @@ func TestManagementHandleReturnsJSONResponseForMalformedRequest(t *testing.T) {
 	}
 }
 
+func TestManagementPreviewAcceptsGetForCompatibility(t *testing.T) {
+	r := newRuntime(&fakeHost{})
+	r.store.path = filepath.Join(t.TempDir(), "state.json")
+	request, _ := json.Marshal(map[string]string{"Method": "GET", "Path": "/plugins/credential-tier-router/preview"})
+	response, err := r.handleManagement(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 200 || len(response.Body) == 0 {
+		t.Fatalf("unexpected GET preview response: %+v", response)
+	}
+}
+
 func TestManagementHandleConvertsPanicToJSONResponse(t *testing.T) {
 	r := newRuntime(&panicHost{})
 	request, _ := json.Marshal(map[string]string{"Method": "POST", "Path": "/plugins/credential-tier-router/preview"})
