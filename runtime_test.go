@@ -22,6 +22,12 @@ func (f *fakeHost) listAuth(context.Context) ([]authFile, error) {
 	return append([]authFile(nil), f.files...), nil
 }
 
+type panicHost struct{ fakeHost }
+
+func (panicHost) listAuth(context.Context) ([]authFile, error) {
+	panic("host callback failed")
+}
+
 func (f *fakeHost) getAuth(_ context.Context, index string) (authDocument, error) {
 	document, ok := f.documents[index]
 	if !ok {
@@ -44,6 +50,54 @@ func (f *fakeHost) httpDo(_ context.Context, request hostHTTPRequest) (hostHTTPR
 		return hostHTTPResponse{}, errors.New("probe unavailable")
 	}
 	return response, nil
+}
+
+func TestManagementHandleReturnsJSONResponseForMalformedRequest(t *testing.T) {
+	r := newRuntime(&fakeHost{})
+	raw := r.handle(context.Background(), "management.handle", []byte("{"))
+	var envelope struct {
+		OK     bool            `json:"ok"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("invalid plugin envelope: %v", err)
+	}
+	if !envelope.OK {
+		t.Fatalf("management failure must remain an HTTP response: %s", raw)
+	}
+	var response managementResponse
+	if err := json.Unmarshal(envelope.Result, &response); err != nil {
+		t.Fatalf("invalid management response: %v", err)
+	}
+	if response.StatusCode != 500 || len(response.Body) == 0 {
+		t.Fatalf("unexpected management response: %+v", response)
+	}
+	if got := response.Headers["Content-Type"]; len(got) != 1 || got[0] != "application/json; charset=utf-8" {
+		t.Fatalf("management response is not JSON: %#v", response.Headers)
+	}
+}
+
+func TestManagementHandleConvertsPanicToJSONResponse(t *testing.T) {
+	r := newRuntime(&panicHost{})
+	request, _ := json.Marshal(map[string]string{"Method": "POST", "Path": "/plugins/credential-tier-router/preview"})
+	raw := r.handle(context.Background(), "management.handle", request)
+	var envelope struct {
+		OK     bool            `json:"ok"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("invalid plugin envelope: %v", err)
+	}
+	if !envelope.OK {
+		t.Fatalf("management panic must remain an HTTP response: %s", raw)
+	}
+	var response managementResponse
+	if err := json.Unmarshal(envelope.Result, &response); err != nil {
+		t.Fatalf("invalid management response: %v", err)
+	}
+	if response.StatusCode != 500 || !strings.Contains(string(response.Body), "management handler panic") {
+		t.Fatalf("unexpected panic response: %+v", response)
+	}
 }
 
 func TestQuotaBandTiers(t *testing.T) {
