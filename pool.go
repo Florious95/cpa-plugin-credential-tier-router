@@ -31,30 +31,22 @@ func applyActivePoolCap(cfg *settings, credentials []credentialState, now time.T
 		// Incumbents are non-preemptive: a healthy credential that already
 		// occupies a primary slot stays there while vacancies are filled around
 		// it. Only an over-cap historical state is trimmed among incumbents.
-		incumbents := make([]int, 0, len(indexes))
-		for _, index := range indexes {
-			if protectedIncumbent(*cfg, credentials[index], now) {
+		incumbents := make([]int, 0, len(eligible))
+		for _, index := range eligible {
+			if credentials[index].CurrentTier == tierPrimary {
 				incumbents = append(incumbents, index)
 			}
 		}
-		sort.SliceStable(incumbents, func(left, right int) bool {
-			return poolCandidateBefore(*cfg, credentials[incumbents[left]], credentials[incumbents[right]])
-		})
 		if len(incumbents) > cfg.ActivePoolSize {
 			incumbents = incumbents[:cfg.ActivePoolSize]
 		}
 		selected := make(map[int]bool, min(cfg.ActivePoolSize, len(eligible)))
 		for _, index := range incumbents {
 			selected[index] = true
-			if credentials[index].ProposedTier != tierPrimary {
-				credentials[index].ProposedTier = tierPrimary
-				credentials[index].Reason = "活跃池现任保护"
-				credentials[index].Changed = credentials[index].ProposedTier != credentials[index].CurrentTier
-			}
 		}
 		needed := cfg.ActivePoolSize - len(selected)
 		for _, index := range eligible {
-			if needed <= 0 {
+			if needed == 0 {
 				break
 			}
 			if selected[index] {
@@ -74,8 +66,8 @@ func applyActivePoolCap(cfg *settings, credentials []credentialState, now time.T
 			}
 			credential.Changed = credential.ProposedTier != credential.CurrentTier
 		}
-		// Credentials outside the selected pool, including failed/unknown
-		// non-incumbents, are kept as backup rather than primary.
+		// A failed/unknown probe is not eligible for the active pool. Demote a
+		// stale primary as well, otherwise a probe failure could exceed the cap.
 		for _, index := range indexes {
 			credential := &credentials[index]
 			if selected[index] || credential.Unavailable || credential.ProposedTier != tierPrimary {
@@ -86,24 +78,6 @@ func applyActivePoolCap(cfg *settings, credentials []credentialState, now time.T
 			credential.Changed = credential.ProposedTier != credential.CurrentTier
 		}
 	}
-}
-
-func protectedIncumbent(cfg settings, credential credentialState, now time.Time) bool {
-	if credential.CurrentTier != tierPrimary || credential.Disabled || credential.Unavailable || credential.ProposedTier == tierPaused {
-		return false
-	}
-	if credential.Quota.Remaining != nil && *credential.Quota.Remaining <= 0 {
-		return false
-	}
-	if credential.Quota.RestUntil != nil && credential.Quota.RestUntil.After(now) {
-		return false
-	}
-	// quotaRetry is the transient failure state. quotaUnknown with a failure
-	// count at the threshold is terminal and may evict an incumbent.
-	if credential.Quota.FailCount >= cfg.FailureThreshold && (credential.Quota.Status == quotaRetry || credential.Quota.Status == quotaUnknown) {
-		return false
-	}
-	return true
 }
 
 func poolCandidate(credential credentialState, now time.Time) bool {
