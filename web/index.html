@@ -75,6 +75,8 @@
           <label class="field"><span>地区 400 切网脚本路径</span><input id="egressCommand" type="text" value="/usr/local/bin/cpa-egress-cycle" autocomplete="off"></label>
           <label class="field"><span>切网脚本执行参数</span><input id="egressTarget" type="text" value="to-2.5x" autocomplete="off"></label>
           <label class="field"><span>400 防抖时间（分钟）</span><input id="geo400DebounceMinutes" type="number" min="1" step="1" value="5" inputmode="numeric"></label>
+          <label class="field"><span>地区 400 账号休眠（小时）</span><input id="geo400RestHours" type="number" min="1" step="1" value="24" inputmode="numeric"></label>
+          <label class="field"><span>地区 400 自动切网</span><input id="geo400EgressEnabled" type="checkbox"></label>
           <fieldset class="provider-choice"><legend>参与调度</legend><label><input type="checkbox" value="codex" checked> Codex</label><label><input type="checkbox" value="antigravity" checked> Antigravity</label></fieldset>
         </div>
       </details>

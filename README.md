@@ -11,7 +11,7 @@ The embedded Management Center page uses named policies instead of numeric score
 - An Antigravity credential at 0% (or newly paused) records a durable rest deadline, defaulting to 16 hours; early upstream quota recovery does not release it.
 - A failed quota probe keeps the last known result until the configured consecutive-failure threshold is reached, while preserving an active rest deadline.
 - Paused credentials use CPA priority `-1` rather than writing `disabled=true`, so the credential can restore after its rest deadline and a healthy quota result.
-- The usage plugin passively matches Antigravity HTTP 400 region failures and asynchronously invokes the configured egress command with five-minute event deduplication.
+- The usage plugin passively matches Antigravity HTTP 400 region failures, atomically pauses the affected credential for 24 hours by default, and only optionally invokes a configured egress command with five-minute event deduplication.
 - Credential updates preserve the complete auth document and change only CPA priority.
 - Nested backup files are excluded from scheduling and writeback.
 - Credentials within the same tier remain available to CPA's normal round-robin selection.
@@ -50,9 +50,11 @@ plugins:
       egress_command: /usr/local/bin/cpa-egress-cycle
       egress_target: to-2.5x
       geo400_debounce_minutes: 5
+      geo400_rest_hours: 24
+      geo400_egress_enabled: false
 ```
 
-`rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records whose status is 400 and whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive), then starts `egress_command egress_target` with a 15-second timeout. The command is not run more than once for the same credential/body within `geo400_debounce_minutes`.
+`rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records whose status is 400 and whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive). It immediately saves the affected credential with priority `-1` and records a configurable `geo400_rest_hours` lock (default 24 hours). Optional network switching is disabled by default (`geo400_egress_enabled: false`); when enabled, the plugin starts `egress_command egress_target` with a 15-second timeout. The command is not run more than once for the same credential/body within `geo400_debounce_minutes`. If an enabled command cannot run inside a container, the plugin writes `geo-400-alert.json` beside its state file (or at `CREDENTIAL_TIER_ROUTER_GEO_ALERT_PATH`) for a host-side watcher.
 
 Start with `auto_apply: false`, open **Credential Tiers** in Management Center, refresh quota, and review the preview before enabling automatic writeback. The region-400 usage listener is passive and does not depend on the quota probe timer.
 

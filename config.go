@@ -35,6 +35,8 @@ type settings struct {
 	EgressCommand         string              `json:"egress_command"`
 	EgressTarget          string              `json:"egress_target"`
 	Geo400DebounceMinutes int                 `json:"geo400_debounce_minutes"`
+	Geo400RestHours       int                 `json:"geo400_rest_hours"`
+	Geo400EgressEnabled   bool                `json:"geo400_egress_enabled"`
 	ManualTiers           map[string]tierName `json:"manual_tiers,omitempty"`
 }
 
@@ -50,6 +52,8 @@ func defaultSettings() settings {
 		EgressCommand:         "/usr/local/bin/cpa-egress-cycle",
 		EgressTarget:          "to-2.5x",
 		Geo400DebounceMinutes: 5,
+		Geo400RestHours:       24,
+		Geo400EgressEnabled:   false,
 		ManualTiers:           map[string]tierName{},
 	}
 }
@@ -67,6 +71,9 @@ func normalizeSettings(s settings) settings {
 	}
 	if s.Geo400DebounceMinutes <= 0 {
 		s.Geo400DebounceMinutes = defaults.Geo400DebounceMinutes
+	}
+	if s.Geo400RestHours <= 0 {
+		s.Geo400RestHours = defaults.Geo400RestHours
 	}
 	return s
 }
@@ -89,6 +96,9 @@ func (s settings) validate() error {
 	}
 	if s.Geo400DebounceMinutes <= 0 {
 		return errors.New("geo400_debounce_minutes must be positive")
+	}
+	if s.Geo400RestHours <= 0 {
+		return errors.New("geo400_rest_hours must be positive")
 	}
 	if strings.TrimSpace(s.EgressCommand) == "" || strings.TrimSpace(s.EgressTarget) == "" {
 		return errors.New("egress command and target must be configured")
@@ -179,6 +189,12 @@ func parsePluginConfig(raw []byte) (settings, error) {
 	}
 	if value := values["geo400_debounce_minutes"]; value != "" {
 		cfg.Geo400DebounceMinutes, _ = strconv.Atoi(value)
+	}
+	if value := values["geo400_rest_hours"]; value != "" {
+		cfg.Geo400RestHours, _ = strconv.Atoi(value)
+	}
+	if value := values["geo400_egress_enabled"]; value != "" {
+		cfg.Geo400EgressEnabled = parseBool(value)
 	}
 	cfg = normalizeSettings(cfg)
 	return cfg, cfg.validate()

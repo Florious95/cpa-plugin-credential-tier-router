@@ -22,6 +22,8 @@ func TestSettingsPanelExposesRestAndEgressControls(t *testing.T) {
 		`id="egressCommand" type="text" value="/usr/local/bin/cpa-egress-cycle"`,
 		`id="egressTarget" type="text" value="to-2.5x"`,
 		`id="geo400DebounceMinutes" type="number" min="1" step="1" value="5"`,
+		`id="geo400RestHours" type="number" min="1" step="1" value="24"`,
+		`id="geo400EgressEnabled" type="checkbox"`,
 	} {
 		if !strings.Contains(html, control) {
 			t.Errorf("settings panel missing %q", control)
@@ -86,6 +88,8 @@ func TestSettingsPanelRoundTripsRuntimePolicyFields(t *testing.T) {
 		"egress_command:byId('egressCommand').value.trim()||'/usr/local/bin/cpa-egress-cycle'",
 		"egress_target:byId('egressTarget').value.trim()||'to-2.5x'",
 		"geo400_debounce_minutes:Math.max(1,Number(byId('geo400DebounceMinutes').value)||5)",
+		"geo400_rest_hours:Math.max(1,Number(byId('geo400RestHours').value)||24)",
+		"geo400_egress_enabled:byId('geo400EgressEnabled').checked",
 	} {
 		if !strings.Contains(app, snippet) {
 			t.Errorf("app.js missing settings round-trip marker %q", snippet)
