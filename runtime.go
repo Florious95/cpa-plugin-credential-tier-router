@@ -149,6 +149,10 @@ func (r *runtime) configure(config settings) error {
 	return nil
 }
 
+func nextProbeAt(now time.Time, cfg settings) time.Time {
+	return now.UTC().Add(cfg.interval())
+}
+
 func (r *runtime) restartWorker() {
 	r.mu.Lock()
 	if r.cancel != nil {
@@ -169,7 +173,7 @@ func (r *runtime) restartWorker() {
 		timer := time.NewTimer(cfg.interval())
 		defer timer.Stop()
 		for {
-			next := time.Now().UTC().Add(cfg.interval())
+			next := nextProbeAt(time.Now(), cfg)
 			r.mu.Lock()
 			r.nextProbe = &next
 			r.mu.Unlock()
@@ -309,10 +313,12 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 			continue
 		}
 		current := tierFromPriority(file.Priority, file.Disabled)
+		previousQuota := cache[file.AuthIndex]
 		quota, probeErr := probeCredential(ctx, r.host, file, cfg, now)
 		if probeErr != nil {
-			quota = failedQuota(cache[file.AuthIndex], probeErr, cfg.FailureThreshold, now)
+			quota = failedQuota(previousQuota, probeErr, cfg.FailureThreshold, now)
 		}
+		inheritAntigravityRest(&quota, previousQuota, now)
 		applyAntigravityRest(&cfg, file, current, &quota, now)
 		cache[file.AuthIndex] = quota
 		proposed, reason := chooseTier(cfg, file, current, quota, now)

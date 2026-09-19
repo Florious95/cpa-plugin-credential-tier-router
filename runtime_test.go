@@ -77,6 +77,17 @@ func TestManagementHandleReturnsJSONResponseForMalformedRequest(t *testing.T) {
 	}
 }
 
+func TestNextProbeAtUsesConfiguredInterval(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 123456789, time.UTC)
+	cfg := defaultSettings()
+	cfg.IntervalMinutes = 15
+	got := nextProbeAt(now, cfg)
+	want := now.Add(15 * time.Minute)
+	if !got.Equal(want) {
+		t.Fatalf("next probe=%v, want %v", got, want)
+	}
+}
+
 func TestManagementPreviewAcceptsGetForCompatibility(t *testing.T) {
 	r := newRuntime(&fakeHost{})
 	r.store.path = filepath.Join(t.TempDir(), "state.json")

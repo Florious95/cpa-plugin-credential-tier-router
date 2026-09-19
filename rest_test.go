@@ -38,6 +38,27 @@ func TestAntigravityRestDefaultDurationAndPausedPriority(t *testing.T) {
 	}
 }
 
+func TestAntigravityRestDeadlineSurvivesRepeatedProbes(t *testing.T) {
+	firstAt := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	cfg := defaultSettings()
+	file := authFile{Provider: "antigravity"}
+	first := readyQuota(0, ptrTime(firstAt.Add(time.Hour)), firstAt)
+	if !applyAntigravityRest(&cfg, file, tierRegular, &first, firstAt) {
+		t.Fatal("expected first exhausted probe to start rest")
+	}
+	wantUntil := *first.RestUntil
+
+	secondAt := firstAt.Add(7 * time.Minute)
+	second := readyQuota(0, ptrTime(secondAt.Add(time.Hour)), secondAt)
+	inheritAntigravityRest(&second, first, secondAt)
+	if applyAntigravityRest(&cfg, file, tierPaused, &second, secondAt) {
+		t.Fatal("repeated exhausted probe must not restart rest")
+	}
+	if second.RestUntil == nil || !second.RestUntil.Equal(wantUntil) {
+		t.Fatalf("RestUntil=%v, want original deadline %v", second.RestUntil, wantUntil)
+	}
+}
+
 func TestAntigravityRestHoldsThroughEarlyQuotaResetThenReleases(t *testing.T) {
 	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
 	cfg := defaultSettings()

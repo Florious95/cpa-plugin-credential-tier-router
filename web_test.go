@@ -29,6 +29,32 @@ func TestSettingsPanelExposesRestAndEgressControls(t *testing.T) {
 	}
 }
 
+func TestCountdownFormatSupportsMinutePrecision(t *testing.T) {
+	app := readWebAssetForTest(t, "web/app.js")
+	for _, snippet := range []string{
+		"Math.ceil(delta/60000)",
+		"+' 分钟后'",
+		"Math.round(delta/3600000)",
+		"+' 小时后'",
+	} {
+		if !strings.Contains(app, snippet) {
+			t.Errorf("app.js missing minute-precision countdown marker %q", snippet)
+		}
+	}
+}
+
+func TestPreviewRefreshesNextProbeMetadata(t *testing.T) {
+	app := readWebAssetForTest(t, "web/app.js")
+	for _, snippet := range []string{
+		"current.plan=await api('/preview',{method:'POST'});var refreshed=await api('/state')",
+		"current.next_probe_at=refreshed.next_probe_at",
+	} {
+		if !strings.Contains(app, snippet) {
+			t.Errorf("preview path missing refreshed scheduler metadata marker %q", snippet)
+		}
+	}
+}
+
 func TestPreviewUsesPostMethod(t *testing.T) {
 	app := readWebAssetForTest(t, "web/app.js")
 	if !strings.Contains(app, "current.plan=await api('/preview',{method:'POST'})") {
