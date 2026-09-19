@@ -6,7 +6,7 @@
       "name": "Credential Tiers (Active Pool & Geo-400)",
       "description": "Manages Codex and Antigravity credentials with a bounded active pool, human-like rest windows, disabled session eviction, and thresholded geo-restriction egress switching.",
       "author": "Florious95",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "repository": "https://github.com/Florious95/cpa-plugin-credential-tier-router",
       "homepage": "https://github.com/Florious95/cpa-plugin-credential-tier-router",
       "license": "MIT",

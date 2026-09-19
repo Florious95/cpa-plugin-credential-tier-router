@@ -8,6 +8,9 @@ func inheritAntigravityRest(quota *quotaSnapshot, previous quotaSnapshot, now ti
 	}
 	until := previous.RestUntil.UTC()
 	quota.RestUntil = &until
+	// Rest ownership is persisted separately from the latest probe result. A
+	// successful probe must not turn a managed rest into an ordinary snapshot.
+	quota.ManagedRest = true
 }
 
 func applyAntigravityRest(cfg *settings, file authFile, current tierName, quota *quotaSnapshot, now time.Time) bool {

@@ -23,6 +23,7 @@ func (r *runtime) scheduleEgressReturn(at time.Time) {
 	if r.state.EgressReturnAt == nil || at.Before(*r.state.EgressReturnAt) {
 		r.state.EgressReturnAt = &at
 	}
+	r.egressRetryAt = nil
 	state := r.state
 	r.mu.Unlock()
 	_ = r.store.save(state)
@@ -38,7 +39,14 @@ func (r *runtime) returnEgress(ctx context.Context, trigger string) error {
 	r.mu.Unlock()
 	err := invokeEgressCommand(ctx, cfg, cfg.EgressReturnTarget)
 	r.mu.Lock()
-	r.state.EgressReturnAt = nil
+	pending := r.state.EgressReturnAt != nil
+	if err == nil {
+		r.state.EgressReturnAt = nil
+		r.egressRetryAt = nil
+	} else if pending {
+		retry := time.Now().UTC().Add(cfg.interval())
+		r.egressRetryAt = &retry
+	}
 	r.mu.Unlock()
 	if err != nil {
 		r.recordHistory(trigger, 0, 1, "切回主路失败："+safeError(err))
