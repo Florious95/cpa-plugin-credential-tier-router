@@ -25,44 +25,30 @@ const (
 )
 
 type settings struct {
-	AutoApply              bool                `json:"auto_apply"`
-	Strategy               strategyName        `json:"strategy"`
-	ActivePoolSize         int                 `json:"active_pool_size"`
-	IntervalMinutes        int                 `json:"interval_minutes"`
-	Providers              []string            `json:"providers"`
-	AntigravityGroup       string              `json:"antigravity_group"`
-	FailureThreshold       int                 `json:"failure_threshold"`
-	RestDurationHours      int                 `json:"rest_duration_hours"`
-	EgressCommand          string              `json:"egress_command"`
-	EgressTarget           string              `json:"egress_target"`
-	EgressReturnTarget     string              `json:"egress_return_target"`
-	Geo400DebounceMinutes  int                 `json:"geo400_debounce_minutes"`
-	Geo400AccountThreshold int                 `json:"geo400_account_threshold"`
-	Geo400ReturnHours      int                 `json:"geo400_return_hours"`
-	Geo400RestHours        int                 `json:"geo400_rest_hours"`
-	Geo400EgressEnabled    bool                `json:"geo400_egress_enabled"`
-	ManualTiers            map[string]tierName `json:"manual_tiers,omitempty"`
+	AutoApply         bool                `json:"auto_apply"`
+	Strategy          strategyName        `json:"strategy"`
+	ActivePoolSize    int                 `json:"active_pool_size"`
+	IntervalMinutes   int                 `json:"interval_minutes"`
+	Providers         []string            `json:"providers"`
+	AntigravityGroup  string              `json:"antigravity_group"`
+	FailureThreshold  int                 `json:"failure_threshold"`
+	RestDurationHours int                 `json:"rest_duration_hours"`
+	Geo400RestHours   int                 `json:"geo400_rest_hours"`
+	ManualTiers       map[string]tierName `json:"manual_tiers,omitempty"`
 }
 
 func defaultSettings() settings {
 	return settings{
-		AutoApply:              false,
-		Strategy:               strategyQuota,
-		ActivePoolSize:         4,
-		IntervalMinutes:        15,
-		Providers:              []string{"codex", "antigravity"},
-		AntigravityGroup:       "gemini",
-		FailureThreshold:       3,
-		RestDurationHours:      16,
-		EgressCommand:          "/usr/local/bin/cpa-egress-cycle",
-		EgressTarget:           "to-2.5x",
-		EgressReturnTarget:     "to-wrap",
-		Geo400DebounceMinutes:  5,
-		Geo400AccountThreshold: 2,
-		Geo400ReturnHours:      12,
-		Geo400RestHours:        2,
-		Geo400EgressEnabled:    false,
-		ManualTiers:            map[string]tierName{},
+		AutoApply:         false,
+		Strategy:          strategyQuota,
+		ActivePoolSize:    4,
+		IntervalMinutes:   15,
+		Providers:         []string{"codex", "antigravity"},
+		AntigravityGroup:  "gemini",
+		FailureThreshold:  3,
+		RestDurationHours: 16,
+		Geo400RestHours:   2,
+		ManualTiers:       map[string]tierName{},
 	}
 }
 
@@ -71,23 +57,8 @@ func normalizeSettings(s settings) settings {
 	if s.RestDurationHours <= 0 {
 		s.RestDurationHours = defaults.RestDurationHours
 	}
-	if strings.TrimSpace(s.EgressCommand) == "" {
-		s.EgressCommand = defaults.EgressCommand
-	}
-	if strings.TrimSpace(s.EgressTarget) == "" {
-		s.EgressTarget = defaults.EgressTarget
-	}
-	if strings.TrimSpace(s.EgressReturnTarget) == "" {
-		s.EgressReturnTarget = defaults.EgressReturnTarget
-	}
-	if s.Geo400DebounceMinutes <= 0 {
-		s.Geo400DebounceMinutes = defaults.Geo400DebounceMinutes
-	}
 	if s.Geo400RestHours <= 0 {
 		s.Geo400RestHours = defaults.Geo400RestHours
-	}
-	if s.Geo400AccountThreshold <= 0 {
-		s.Geo400AccountThreshold = defaults.Geo400AccountThreshold
 	}
 	return s
 }
@@ -111,20 +82,8 @@ func (s settings) validate() error {
 	if s.RestDurationHours <= 0 {
 		return errors.New("rest_duration_hours must be positive")
 	}
-	if s.Geo400DebounceMinutes <= 0 {
-		return errors.New("geo400_debounce_minutes must be positive")
-	}
 	if s.Geo400RestHours <= 0 {
 		return errors.New("geo400_rest_hours must be positive")
-	}
-	if s.Geo400AccountThreshold <= 0 {
-		return errors.New("geo400_account_threshold must be positive")
-	}
-	if strings.TrimSpace(s.EgressCommand) == "" || strings.TrimSpace(s.EgressTarget) == "" || strings.TrimSpace(s.EgressReturnTarget) == "" {
-		return errors.New("egress command and targets must be configured")
-	}
-	if s.Geo400ReturnHours < 0 {
-		return errors.New("geo400_return_hours must be zero or positive")
 	}
 	if s.AntigravityGroup != "gemini" && s.AntigravityGroup != "claude_gpt" {
 		return errors.New("antigravity_group must be gemini or claude_gpt")
@@ -207,29 +166,8 @@ func parsePluginConfig(raw []byte) (settings, error) {
 	if value := values["rest_duration_hours"]; value != "" {
 		cfg.RestDurationHours, _ = strconv.Atoi(value)
 	}
-	if value := values["egress_command"]; value != "" {
-		cfg.EgressCommand = value
-	}
-	if value := values["egress_target"]; value != "" {
-		cfg.EgressTarget = value
-	}
-	if value := values["egress_return_target"]; value != "" {
-		cfg.EgressReturnTarget = value
-	}
-	if value := values["geo400_debounce_minutes"]; value != "" {
-		cfg.Geo400DebounceMinutes, _ = strconv.Atoi(value)
-	}
-	if value := values["geo400_account_threshold"]; value != "" {
-		cfg.Geo400AccountThreshold, _ = strconv.Atoi(value)
-	}
 	if value := values["geo400_rest_hours"]; value != "" {
 		cfg.Geo400RestHours, _ = strconv.Atoi(value)
-	}
-	if value := values["geo400_return_hours"]; value != "" {
-		cfg.Geo400ReturnHours, _ = strconv.Atoi(value)
-	}
-	if value := values["geo400_egress_enabled"]; value != "" {
-		cfg.Geo400EgressEnabled = parseBool(value)
 	}
 	cfg = normalizeSettings(cfg)
 	return cfg, cfg.validate()

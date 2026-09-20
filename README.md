@@ -11,8 +11,8 @@ The embedded Management Center page uses named policies instead of numeric score
 - An Antigravity credential at 0% (or newly paused) records a durable rest deadline, defaulting to 16 hours; early upstream quota recovery does not release it.
 - A failed quota probe keeps the last known result until the configured consecutive-failure threshold is reached, while preserving an active rest deadline.
 - `active_pool_size` (default 4) manages persistent Primary workers per provider. Incumbents keep their seats even at 1% quota or during transient probe failures; strategies rank only reserves filling actual vacancies. Zero disables pool management.
-- Managed pauses write CPA priority `-1` and `disabled=true`, so session affinity can evict the credential; expiry restores `disabled=false` and recalculates its tier.
-- The usage plugin passively matches Antigravity HTTP 400 region failures, pauses only the affected credential for two hours by default, and triggers egress only after the configured number of distinct accounts hit the error in the sliding window.
+- Tiers and the hard-disable circuit breaker are independent: managed rest uses priority `-1`, while a Geo-400 burst also immediately writes `disabled=true` to break CPA affinity. The following inspection restores `disabled=false` while keeping priority `-1` until rest expires.
+- The usage plugin passively matches Antigravity HTTP 400 region failures and rests only the affected credential for two hours by default. The plugin has no network-switching responsibility and never launches external commands.
 - Credential updates preserve the complete auth document and change only managed scheduling fields.
 - Nested backup files are excluded from scheduling and writeback.
 - Credentials within the same tier remain available to CPA's normal round-robin selection.
@@ -49,17 +49,21 @@ plugins:
       antigravity_group: gemini
       failure_threshold: 3
       rest_duration_hours: 16
-      egress_command: /usr/local/bin/cpa-egress-cycle
-      egress_target: to-2.5x
-      egress_return_target: to-wrap
-      geo400_debounce_minutes: 5
-      geo400_account_threshold: 2
       geo400_rest_hours: 2
-      geo400_egress_enabled: false
-      geo400_return_hours: 12
 ```
 
-`active_pool_size` sets the Primary admission target independently for each configured provider. `rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records whose status is 400 and whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive). A matching account is immediately saved with priority `-1` and `disabled=true`, records a configurable `geo400_rest_hours` lock (default 2 hours), and triggers reserve reconciliation. Egress remains disabled by default; when enabled, it requires `geo400_account_threshold` distinct accounts within `geo400_debounce_minutes` before starting `egress_command egress_target`. It schedules a return after `geo400_return_hours` (zero disables automatic return) using `egress_return_target`. The same sliding window suppresses repeated egress launches. If an enabled command cannot run inside a container, the plugin writes `geo-400-alert.json` beside its state file (or at `CREDENTIAL_TIER_ROUTER_GEO_ALERT_PATH`) for a host-side watcher. The Management Center also exposes a one-click return endpoint.
+`active_pool_size` sets the Primary admission target independently for each configured provider. `rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records whose status is 400 and whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive).
+
+The first configuration card contains the original policies and base settings. The second, independent **在岗与休眠** card contains the worker target, exhaustion-rest duration, and Geo-400 rest duration.
+
+### Managed rest lifecycle
+
+1. A matching Geo-400 immediately writes `priority:-1` and `disabled:true` together and records a durable `geo400_rest_hours` deadline (default 2 hours). Reserve admission does not undo this hard-disable in the same event.
+2. The next inspection (default 15 minutes) writes `disabled:false`, retaining `priority:-1`. This recovery runs before slow quota probes, and also runs when ordinary Auto Apply is off; in that case only existing managed-rest credentials are touched, without reserve admission.
+3. During rest the page displays **强制休眠至…** with remaining time, even if the quota probe is unknown or retrying. Neither early quota recovery nor repeated errors extends/releases the existing rest.
+4. At or after the deadline, priority alone returns to a usable tier (normally Backup 200, or Primary 400 if an enabled pool has a vacancy). Failed writeback keeps durable recovery ownership for the next attempt or restart. Genuine external disables without managed-rest ownership are never cleared.
+
+Old network-control configuration fields are ignored on load and disappear on the next state save. There are no network commands, return timers, network management routes, or network controls.
 
 Start with `auto_apply: false`, open **Credential Tiers** in Management Center, refresh quota, and review the preview before enabling automatic writeback. The region-400 usage listener is passive and does not depend on the quota probe timer.
 

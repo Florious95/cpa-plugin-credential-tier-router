@@ -31,12 +31,6 @@ func (s stateStore) load() (persistedState, error) {
 		if _, exists := wire.Settings["active_pool_size"]; !exists {
 			state.Settings.ActivePoolSize = defaults.ActivePoolSize
 		}
-		if _, exists := wire.Settings["geo400_account_threshold"]; !exists {
-			state.Settings.Geo400AccountThreshold = defaults.Geo400AccountThreshold
-		}
-		if _, exists := wire.Settings["geo400_return_hours"]; !exists {
-			state.Settings.Geo400ReturnHours = defaults.Geo400ReturnHours
-		}
 		if _, exists := wire.Settings["geo400_rest_hours"]; !exists {
 			state.Settings.Geo400RestHours = defaults.Geo400RestHours
 		}

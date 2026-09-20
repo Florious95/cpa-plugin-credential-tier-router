@@ -162,6 +162,13 @@ func resetValue(c credentialState) time.Time {
 	return c.Quota.ResetAt.UTC()
 }
 
+func projectionChanged(file authFile, c credentialState) bool {
+	// Availability is a pool admission gate, not a reason to strand the
+	// one-shot disable. A readable owned rest can safely stay paused/enabled.
+	canWrite := !c.Unavailable || (c.Quota.ManagedRest && c.ProposedTier == tierPaused)
+	return canWrite && (file.Priority != c.ProposedTier.priority() || file.Disabled != c.ProposedDisabled)
+}
+
 // planPool computes intent from a fresh inventory. It does not mutate runtime
 // state or write auth files, so preview cannot acquire or release a lease.
 func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, pools map[string]activePoolState, now time.Time) (plan, map[string]activePoolState) {
@@ -176,11 +183,19 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 		byID[file.AuthIndex] = file
 		quota := cache[file.AuthIndex]
 		previousRest := quota.RestUntil
-		restExpired := provider == "antigravity" && quota.ManagedRest && quota.RestUntil != nil && !quota.RestUntil.After(now)
-		effectiveDisabled := file.Disabled && !restExpired
+		managedRest := provider == "antigravity" && quota.ManagedRest && quota.RestUntil != nil
+		restExpired := managedRest && !quota.RestUntil.After(now)
+		// disabled breaks CPA session affinity once; a managed rest is thereafter
+		// enforced by priority alone. Never enable an externally disabled file.
+		effectiveDisabled := file.Disabled && !managedRest
 		current := tierFromPriority(file.Priority, effectiveDisabled)
 		if restExpired && current == tierPaused {
 			current = tierRegular
+		}
+		if restExpired && quota.Remaining != nil && *quota.Remaining <= 0 && !quota.ObservedAt.After(*previousRest) {
+			// A pre-deadline zero is not evidence of exhaustion after expiry.
+			// Cache-only recovery must not start another full rest from it.
+			quota.Remaining, quota.Status = nil, quotaUnknown
 		}
 		if quota.Status == "" {
 			quota.Status = quotaUnknown
@@ -196,7 +211,7 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 				reason = fmt.Sprintf("手动暂停，休眠至 %s", quota.RestUntil.UTC().Format(time.RFC3339))
 			}
 		}
-		if restExpired && file.Disabled && proposed != tierPaused {
+		if restExpired && proposed != tierPaused {
 			// Keep ownership durable until the enabling write has succeeded.
 			// Otherwise a crash between intent and projection strands this file
 			// as an apparently external disable on restart.
@@ -206,17 +221,25 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 		credentials = append(credentials, credentialState{
 			Provider: provider, Account: maskAccount(firstText(file.Email, file.Account, file.Name)), AuthIndex: file.AuthIndex,
 			CurrentTier: current, ProposedTier: proposed, Reason: reason, Quota: quota,
-			Disabled: effectiveDisabled, Unavailable: file.Unavailable,
+			Disabled: file.Disabled, ProposedDisabled: effectiveDisabled || (provider != "antigravity" && proposed == tierPaused), Unavailable: file.Unavailable,
 		})
 	}
+	// Health classification must use the desired enablement, not the one-shot
+	// hard-disable that this inspection is about to clear.
+	for i := range credentials {
+		credentials[i].Disabled = credentials[i].ProposedDisabled
+	}
 	next := selectActivePool(cfg, credentials, pools, now)
+	for i := range credentials {
+		credentials[i].Disabled = byID[credentials[i].AuthIndex].Disabled
+	}
 	result := plan{GeneratedAt: now, Strategy: cfg.Strategy, Credentials: credentials}
 	for i := range result.Credentials {
 		c := &result.Credentials[i]
 		file := byID[c.AuthIndex]
 		// Compare the actual projection, not just tier names: a managed rest
 		// can expire while the file still has disabled=true and priority=400.
-		c.Changed = !c.Unavailable && (file.Priority != c.ProposedTier.priority() || file.Disabled != (c.ProposedTier == tierPaused))
+		c.Changed = projectionChanged(file, *c)
 		if c.Changed {
 			result.Changes++
 		}
@@ -240,6 +263,23 @@ func (r *runtime) reconcileActivePool(ctx context.Context, trigger string) error
 // commitPool requires commitMu. Observations are merged into current state only
 // after acquiring that fence, and auth inventory is re-read before planning.
 func (r *runtime) commitPool(ctx context.Context, observations map[string]quotaSnapshot, apply bool, trigger string) (plan, error) {
+	return r.commitPoolTransition(ctx, observations, apply, trigger, "", false)
+}
+
+// A geo event must refill vacancies without clearing its own hard-disable in
+// the very same transaction. The next inspection performs that second phase.
+func (r *runtime) commitPoolWithPause(ctx context.Context, observations map[string]quotaSnapshot, apply bool, trigger, hardPausedID string) (plan, error) {
+	return r.commitPoolTransition(ctx, observations, apply, trigger, hardPausedID, false)
+}
+
+func (r *runtime) reconcileManagedRest(ctx context.Context) error {
+	r.commitMu.Lock()
+	defer r.commitMu.Unlock()
+	_, err := r.commitPoolTransition(ctx, nil, true, "休眠自愈", "", true)
+	return err
+}
+
+func (r *runtime) commitPoolTransition(ctx context.Context, observations map[string]quotaSnapshot, apply bool, trigger, hardPausedID string, managedOnly bool) (plan, error) {
 	if r.loadErr != nil {
 		return plan{}, fmt.Errorf("load state: %w", r.loadErr)
 	}
@@ -260,9 +300,53 @@ func (r *runtime) commitPool(ctx context.Context, observations map[string]quotaS
 		}
 		cache[id] = observation
 	}
-	result, next := planPool(cfg, files, cache, pools, time.Now().UTC())
+	observedCache := cloneQuota(cache)
+	planningConfig := cfg
+	if managedOnly {
+		// Recovery remains available with auto-apply off, but cannot rebalance
+		// unrelated credentials, bootstrap a pool, or admit new members.
+		files = slices.DeleteFunc(slices.Clone(files), func(f authFile) bool {
+			q := cache[f.AuthIndex]
+			return providerOf(f) != "antigravity" || !q.ManagedRest || q.RestUntil == nil
+		})
+		if len(files) == 0 {
+			return plan{}, nil
+		}
+		planningConfig.Providers = []string{"antigravity"}
+		planningConfig.ActivePoolSize = 0
+	}
+	result, next := planPool(planningConfig, files, cache, pools, time.Now().UTC())
+	if managedOnly || hardPausedID != "" {
+		byID := make(map[string]authFile, len(files))
+		for _, f := range files {
+			byID[f.AuthIndex] = f
+		}
+		result.Changes = 0
+		for i := range result.Credentials {
+			c := &result.Credentials[i]
+			if managedOnly && cfg.ActivePoolSize > 0 && c.ProposedTier != tierPaused {
+				c.ProposedTier = tierBackup
+				if slices.Contains(pools[c.Provider].Members, c.AuthIndex) {
+					c.ProposedTier = tierPrimary
+				}
+			}
+			if c.AuthIndex == hardPausedID {
+				c.ProposedDisabled = true
+			}
+			f := byID[c.AuthIndex]
+			c.Changed = projectionChanged(f, *c)
+			if c.Changed {
+				result.Changes++
+			}
+		}
+	}
 	r.mu.Lock()
 	oldQuota, oldPools := r.state.Quota, r.state.ActivePool
+	if !apply {
+		// Preview may update probe observations, but must never grant a new
+		// managed-rest write permission to the background recovery worker.
+		cache = observedCache
+	}
 	r.state.Quota = cache
 	if apply {
 		r.state.ActivePool = next
@@ -301,6 +385,10 @@ func (r *runtime) commitPool(ctx context.Context, observations map[string]quotaS
 	// Usage events mutate the dashboard; the caller may concurrently encode
 	// its returned plan as a management response.
 	r.latest.Credentials = append([]credentialState(nil), result.Credentials...)
+	if managedOnly {
+		// A scoped recovery must not replace the dashboard with a partial pool.
+		r.latest = plan{}
+	}
 	r.mu.Unlock()
 	if err := r.persistState(); err != nil {
 		return plan{}, err

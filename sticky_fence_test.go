@@ -92,7 +92,7 @@ func TestStickyManualPauseOverridesUnknownProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	stickyMembers(t, r, "b", "c", "d", "e")
-	if f := reviewAuth(t, h, "a"); !f.Disabled || f.Priority != -1 {
+	if f := reviewAuth(t, h, "a"); f.Disabled || f.Priority != -1 {
 		t.Fatalf("explicit manual pause lost to transient protection: %+v", f)
 	}
 }

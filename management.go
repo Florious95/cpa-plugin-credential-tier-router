@@ -75,12 +75,6 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 			return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": safeError(err)}), nil
 		}
 		return jsonManagementResponse(http.StatusOK, result), nil
-	case method == http.MethodPost && path == "/egress/return":
-		result, err := r.managementReturnEgress(ctx)
-		if err != nil {
-			return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": safeError(err)}), nil
-		}
-		return jsonManagementResponse(http.StatusOK, result), nil
 	case method == http.MethodPut && path == "/settings":
 		var next settings
 		if err := json.Unmarshal(body, &next); err != nil {
@@ -93,9 +87,6 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 			r.mu.Unlock()
 			if _, exists := fields["active_pool_size"]; !exists {
 				next.ActivePoolSize = current.ActivePoolSize
-			}
-			if _, exists := fields["geo400_account_threshold"]; !exists {
-				next.Geo400AccountThreshold = current.Geo400AccountThreshold
 			}
 		}
 		if next.ManualTiers == nil {

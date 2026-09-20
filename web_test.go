@@ -15,20 +15,12 @@ func readWebAssetForTest(t *testing.T, name string) string {
 	return string(data)
 }
 
-func TestSettingsPanelExposesRestAndEgressControls(t *testing.T) {
+func TestSettingsPanelExposesPoolAndRestControls(t *testing.T) {
 	html := readWebAssetForTest(t, "web/index.html")
 	for _, control := range []string{
 		`id="activePoolSize" type="number" min="0" step="1" value="4"`,
 		`id="restDurationHours" type="number" min="1" step="1" value="16"`,
-		`id="egressCommand" type="text" value="/usr/local/bin/cpa-egress-cycle"`,
-		`id="egressTarget" type="text" value="to-2.5x"`,
-		`id="geo400DebounceMinutes" type="number" min="1" step="1" value="5"`,
-		`id="geo400AccountThreshold" type="number" min="1" step="1" value="2"`,
 		`id="geo400RestHours" type="number" min="1" step="1" value="2"`,
-		`id="geo400EgressEnabled" type="checkbox" role="switch"`,
-		`id="egressReturnTarget" type="text" value="to-wrap"`,
-		`id="geo400ReturnHours" type="number" min="0" step="1" value="12"`,
-		`id="egressReturnButton" type="button"`,
 	} {
 		if !strings.Contains(html, control) {
 			t.Errorf("settings panel missing %q", control)
@@ -62,19 +54,6 @@ func TestPreviewRefreshesNextProbeMetadata(t *testing.T) {
 	}
 }
 
-func TestEgressReturnControlUsesManagementEndpoint(t *testing.T) {
-	app := readWebAssetForTest(t, "web/app.js")
-	for _, snippet := range []string{
-		"api('/egress/return',{method:'POST'})",
-		"current.egress_return_at",
-		"备用出口暂避中",
-	} {
-		if !strings.Contains(app, snippet) {
-			t.Errorf("app.js missing egress return marker %q", snippet)
-		}
-	}
-}
-
 func TestPreviewUsesPostMethod(t *testing.T) {
 	app := readWebAssetForTest(t, "web/app.js")
 	if !strings.Contains(app, "current.plan=await api('/preview',{method:'POST'})") {
@@ -100,19 +79,10 @@ func TestSettingsPanelRoundTripsRuntimePolicyFields(t *testing.T) {
 	for _, snippet := range []string{
 		"byId('activePoolSize').value=String(settings.active_pool_size==null?4:settings.active_pool_size)",
 		"byId('restDurationHours').value=String(settings.rest_duration_hours||16)",
-		"byId('egressCommand').value=settings.egress_command||'/usr/local/bin/cpa-egress-cycle'",
-		"byId('egressTarget').value=settings.egress_target||'to-2.5x'",
-		"byId('geo400DebounceMinutes').value=String(settings.geo400_debounce_minutes||5)",
+		"byId('geo400RestHours').value=String(settings.geo400_rest_hours||2)",
 		"active_pool_size:Math.max(0,Number(byId('activePoolSize').value)||0)",
 		"rest_duration_hours:Math.max(1,Number(byId('restDurationHours').value)||16)",
-		"egress_command:byId('egressCommand').value.trim()||'/usr/local/bin/cpa-egress-cycle'",
-		"egress_target:byId('egressTarget').value.trim()||'to-2.5x'",
-		"geo400_debounce_minutes:Math.max(1,Number(byId('geo400DebounceMinutes').value)||5)",
-		"geo400_account_threshold:Math.max(1,Number(byId('geo400AccountThreshold').value)||2)",
 		"geo400_rest_hours:Math.max(1,Number(byId('geo400RestHours').value)||2)",
-		"geo400_egress_enabled:byId('geo400EgressEnabled').checked",
-		"egress_return_target:byId('egressReturnTarget').value.trim()||'to-wrap'",
-		"geo400_return_hours:Math.max(0,Number(byId('geo400ReturnHours').value)||0)",
 	} {
 		if !strings.Contains(app, snippet) {
 			t.Errorf("app.js missing settings round-trip marker %q", snippet)
