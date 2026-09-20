@@ -145,8 +145,8 @@ func TestStickyZeroReleasesExactlyOneSeat(t *testing.T) {
 	reviewRun(t, r)
 	stickyMembers(t, r, "b", "c", "d", "e")
 	stickyProjection(t, h, "b", "c", "d", "e")
-	if f := reviewAuth(t, h, "a"); !f.Disabled || f.Priority != -1 {
-		t.Fatalf("zero quota not hard retired: %+v", f)
+	if f := reviewAuth(t, h, "a"); f.Disabled || f.Priority != -1 {
+		t.Fatalf("zero quota not tier-retired: %+v", f)
 	}
 	h.quota("a", 100)
 	reviewExpire(r, "a")
@@ -348,8 +348,8 @@ func TestStickyIntentDurabilityAndPartialProjectionRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			stickyProjection(t, h, "b", "c", "d", "a")
-			if !reviewAuth(t, h, "e").Disabled {
-				t.Fatal("outgoing member not hard retired on replay")
+			if reviewAuth(t, h, "e").Priority != -1 {
+				t.Fatal("outgoing member not retired on replay")
 			}
 		})
 	}
@@ -435,8 +435,8 @@ func TestStickyGeoFillsWhileProbeBlockedAndCannotBeUndone(t *testing.T) {
 		t.Fatal(err)
 	}
 	stickyProjection(t, h, "b", "c", "d", "e")
-	if !reviewAuth(t, h, "a").Disabled {
-		t.Fatal("stale probe resurrected geo-paused member")
+	if f := reviewAuth(t, h, "a"); f.Disabled || f.Priority != -1 {
+		t.Fatal("subsequent probe must clear the hard-disable without releasing the rest")
 	}
 }
 
@@ -454,7 +454,7 @@ func TestStickyConcurrentSaveAndDashboardPreserveMembership(t *testing.T) {
 				case 0:
 					err = r.reconcileActivePool(context.Background(), "concurrent")
 				case 1:
-					r.scheduleEgressReturn(time.Now().Add(time.Hour))
+					r.recordHistory("concurrent", 0, 0, "state-save race")
 				case 2:
 					err = r.persistState()
 				case 3:
@@ -471,7 +471,7 @@ func TestStickyConcurrentSaveAndDashboardPreserveMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(loaded.ActivePool, r.state.ActivePool) || loaded.EgressReturnAt == nil {
+	if !reflect.DeepEqual(loaded.ActivePool, r.state.ActivePool) || len(loaded.History) == 0 {
 		t.Fatal("concurrent persistence overwrote latest durable state")
 	}
 }

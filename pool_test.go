@@ -89,7 +89,7 @@ func TestApplyPlanHardDisablesPausedAndRestoresOnPromotion(t *testing.T) {
 	}}
 	r := newRuntime(host)
 	r.store.path = filepath.Join(t.TempDir(), "state.json")
-	if err := r.applyPlan(context.Background(), []authFile{{AuthIndex: "a", Name: "account.json"}}, plan{Credentials: []credentialState{{AuthIndex: "a", ProposedTier: tierPaused, Changed: true}}}); err != nil {
+	if err := r.applyPlan(context.Background(), []authFile{{AuthIndex: "a", Name: "account.json"}}, plan{Credentials: []credentialState{{AuthIndex: "a", ProposedTier: tierPaused, ProposedDisabled: true, Changed: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	var saved map[string]any
@@ -108,56 +108,5 @@ func TestApplyPlanHardDisablesPausedAndRestoresOnPromotion(t *testing.T) {
 	}
 	if saved["disabled"] != false || int(saved["priority"].(float64)) != 400 {
 		t.Fatalf("restored state=%v, want disabled=false priority=400", saved)
-	}
-}
-
-func TestGeo400ThresholdRequiresDistinctAccountsAndSchedulesReturn(t *testing.T) {
-	previous := runEgressCommand
-	calls := 0
-	runEgressCommand = func(_ context.Context, _ egressInvocation) error { calls++; return nil }
-	t.Cleanup(func() { runEgressCommand = previous })
-	host := &fakeHost{documents: map[string]authDocument{
-		"a": {AuthIndex: "a", Name: "a.json", JSON: json.RawMessage(`{"priority":400,"disabled":false}`)},
-		"b": {AuthIndex: "b", Name: "b.json", JSON: json.RawMessage(`{"priority":400,"disabled":false}`)},
-		"c": {AuthIndex: "c", Name: "c.json", JSON: json.RawMessage(`{"priority":400,"disabled":false}`)},
-	}}
-	r := newRuntime(host)
-	r.store.path = filepath.Join(t.TempDir(), "state.json")
-	r.state.Settings = defaultSettings()
-	r.state.Settings.Geo400EgressEnabled = true
-	r.state.Settings.Geo400AccountThreshold = 2
-	r.geoNow = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
-	body := `{"error":{"status":"FAILED_PRECONDITION","message":"User location is not supported for the API use."}}`
-	event := func(index string) []byte {
-		raw, _ := json.Marshal(usageEvent{Provider: "antigravity", AuthIndex: index, Failed: true, Failure: usageFailure{StatusCode: 400, Body: body}})
-		return raw
-	}
-	if err := r.handleUsage(context.Background(), event("a")); err != nil {
-		t.Fatal(err)
-	}
-	r.egressWG.Wait()
-	if calls != 0 {
-		t.Fatalf("one account triggered egress calls=%d, want 0", calls)
-	}
-	if err := r.handleUsage(context.Background(), event("b")); err != nil {
-		t.Fatal(err)
-	}
-	r.egressWG.Wait()
-	if calls != 1 {
-		t.Fatalf("two distinct accounts triggered egress calls=%d, want 1", calls)
-	}
-	wantReturn := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC).Add(12 * time.Hour)
-	if r.state.EgressReturnAt == nil || !r.state.EgressReturnAt.Equal(wantReturn) {
-		t.Fatalf("return deadline=%v, want %v", r.state.EgressReturnAt, wantReturn)
-	}
-	if err := r.handleUsage(context.Background(), event("b")); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.handleUsage(context.Background(), event("c")); err != nil {
-		t.Fatal(err)
-	}
-	r.egressWG.Wait()
-	if calls != 1 {
-		t.Fatalf("accounts in one sliding window triggered egress calls=%d, want 1", calls)
 	}
 }

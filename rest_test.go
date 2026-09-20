@@ -6,12 +6,12 @@ import (
 	"time"
 )
 
-func TestConfiguredRestAndEgressSettings(t *testing.T) {
-	cfg, err := parsePluginConfig([]byte("rest_duration_hours: 20\negress_command: /opt/cycle\negress_target: to-2.5x\negress_return_target: to-wrap\ngeo400_debounce_minutes: 7\ngeo400_return_hours: 12\ngeo400_rest_hours: 18\ngeo400_egress_enabled: true\n"))
+func TestConfiguredRestSettings(t *testing.T) {
+	cfg, err := parsePluginConfig([]byte("rest_duration_hours: 20\ngeo400_rest_hours: 18\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RestDurationHours != 20 || cfg.EgressCommand != "/opt/cycle" || cfg.EgressTarget != "to-2.5x" || cfg.EgressReturnTarget != "to-wrap" || cfg.Geo400DebounceMinutes != 7 || cfg.Geo400RestHours != 18 || cfg.Geo400ReturnHours != 12 || !cfg.Geo400EgressEnabled {
+	if cfg.RestDurationHours != 20 || cfg.Geo400RestHours != 18 {
 		t.Fatalf("unexpected configured settings: %+v", cfg)
 	}
 }

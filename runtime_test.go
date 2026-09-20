@@ -193,8 +193,8 @@ func TestApplyPreservesCredentialAndUsesSoftPause(t *testing.T) {
 	if saved["custom"] != "keep" || saved["access_token"] != "secret" {
 		t.Fatalf("unrelated fields not preserved: %v", saved)
 	}
-	if saved["disabled"] != true || int(saved["priority"].(float64)) != -1 {
-		t.Fatalf("paused must use priority -1 with hard disable: %v", saved)
+	if saved["disabled"] != false || int(saved["priority"].(float64)) != -1 {
+		t.Fatalf("tier-only pause must use priority -1 without hard disable: %v", saved)
 	}
 }
 

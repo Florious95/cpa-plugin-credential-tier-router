@@ -21,24 +21,17 @@ type runtime struct {
 	runMu sync.Mutex
 	// Lock order: commitMu -> mu. Never hold mu across a host callback.
 	// Slow probes hold runMu only; geo events can commit without waiting.
-	commitMu    sync.Mutex
-	loadErr     error
-	state       persistedState
-	latest      plan
-	store       stateStore
-	cancel      context.CancelFunc
-	done        chan struct{}
-	nextProbe   *time.Time
-	geoMu       sync.Mutex
-	geoEvents   map[string]time.Time
-	geoAccounts map[string]time.Time
-	geoEgressAt time.Time
-	geoNow      func() time.Time
+	commitMu  sync.Mutex
+	loadErr   error
+	state     persistedState
+	latest    plan
+	store     stateStore
+	cancel    context.CancelFunc
+	done      chan struct{}
+	nextProbe *time.Time
+	geoNow    func() time.Time
 
-	egressRetryAt *time.Time
-	egressWG      sync.WaitGroup
-	wake          chan struct{}
-	closed        bool
+	closed bool
 }
 
 func newRuntime(host hostAPI) *runtime {
@@ -47,13 +40,10 @@ func newRuntime(host hostAPI) *runtime {
 		statePath = filepath.Join("credential-tier-router", "state.json")
 	}
 	r := &runtime{
-		host:        host,
-		store:       stateStore{path: statePath},
-		done:        make(chan struct{}),
-		geoEvents:   make(map[string]time.Time),
-		geoAccounts: make(map[string]time.Time),
-		wake:        make(chan struct{}, 1),
-		geoNow:      time.Now,
+		host:   host,
+		store:  stateStore{path: statePath},
+		done:   make(chan struct{}),
+		geoNow: time.Now,
 	}
 	if state, err := r.store.load(); err == nil {
 		r.state = state
@@ -193,68 +183,36 @@ func (r *runtime) restartWorker() {
 		for {
 			r.mu.Lock()
 			cfg := normalizeSettings(r.state.Settings)
-			returnAt := r.state.EgressReturnAt
-			retryAt := r.egressRetryAt
-			r.mu.Unlock()
-
-			var probeTimer *time.Timer
-			var probeC <-chan time.Time
+			next := nextProbeAt(time.Now(), cfg)
 			if cfg.AutoApply {
-				next := nextProbeAt(time.Now(), cfg)
-				r.mu.Lock()
 				r.nextProbe = &next
-				r.mu.Unlock()
-				probeTimer = time.NewTimer(time.Until(next))
-				probeC = probeTimer.C
 			} else {
-				r.mu.Lock()
 				r.nextProbe = nil
-				r.mu.Unlock()
 			}
-
-			var returnTimer *time.Timer
-			var returnC <-chan time.Time
-			if returnAt != nil {
-				due := *returnAt
-				if retryAt != nil && retryAt.After(due) {
-					due = *retryAt
-				}
-				delay := time.Until(due)
-				if delay < 0 {
-					delay = 0
-				}
-				returnTimer = time.NewTimer(delay)
-				returnC = returnTimer.C
-			}
+			r.mu.Unlock()
+			timer := time.NewTimer(time.Until(next))
 			select {
 			case <-ctx.Done():
-				if probeTimer != nil {
-					probeTimer.Stop()
-				}
-				if returnTimer != nil {
-					returnTimer.Stop()
-				}
+				timer.Stop()
 				return
-			case <-r.wake:
-				if probeTimer != nil {
-					probeTimer.Stop()
-				}
-				if returnTimer != nil {
-					returnTimer.Stop()
-				}
-			case <-returnC:
-				if probeTimer != nil {
-					probeTimer.Stop()
-				}
-				_ = r.maybeReturnEgress(context.Background(), time.Now().UTC())
-			case <-probeC:
-				if returnTimer != nil {
-					returnTimer.Stop()
-				}
-				_, _ = r.run(context.Background(), true, "自动调度")
+			case <-timer.C:
+				_ = r.scheduledInspection(ctx, cfg.AutoApply)
 			}
 		}
 	}()
+}
+
+func (r *runtime) scheduledInspection(ctx context.Context, autoApply bool) error {
+	// The passive breaker owns recovery independently of tier automation.
+	// Release its one-shot disable before potentially slow upstream probes.
+	if err := r.reconcileManagedRest(ctx); err != nil {
+		return err
+	}
+	if autoApply {
+		_, err := r.run(ctx, true, "自动调度")
+		return err
+	}
+	return nil
 }
 
 func (r *runtime) shutdown() {
@@ -276,7 +234,6 @@ func (r *runtime) shutdown() {
 		case <-time.After(3 * time.Second):
 		}
 	}
-	r.egressWG.Wait()
 }
 
 func registrationResult() map[string]any {
@@ -301,7 +258,6 @@ func managementRegistration() map[string]any {
 			{"Method": "POST", "Path": "/plugins/" + pluginID + "/preview"},
 			{"Method": "POST", "Path": "/plugins/" + pluginID + "/apply"},
 			{"Method": "PUT", "Path": "/plugins/" + pluginID + "/settings"},
-			{"Method": "POST", "Path": "/plugins/" + pluginID + "/egress/return"},
 		},
 		"resources": []map[string]string{{"Path": "/status", "Menu": "Credential Tiers", "Description": "Manage Codex and Antigravity credential tiers."}},
 	}
@@ -314,7 +270,6 @@ func (r *runtime) dashboard(ctx context.Context) (dashboardState, error) {
 	cfg := r.state.Settings
 	history := append([]historyEntry(nil), r.state.History...)
 	next := r.nextProbe
-	returnAt := r.state.EgressReturnAt
 	r.mu.Unlock()
 	if len(latest.Credentials) == 0 {
 		var err error
@@ -323,7 +278,7 @@ func (r *runtime) dashboard(ctx context.Context) (dashboardState, error) {
 			return dashboardState{}, err
 		}
 	}
-	return dashboardState{PluginStatus: "ready", Settings: cfg, Plan: latest, History: history, NextProbeAt: next, EgressReturnAt: returnAt}, nil
+	return dashboardState{PluginStatus: "ready", Settings: cfg, Plan: latest, History: history, NextProbeAt: next}, nil
 }
 
 func (r *runtime) inspect(ctx context.Context) (plan, error) {
@@ -350,10 +305,14 @@ func (r *runtime) inspect(ctx context.Context) (plan, error) {
 		if quota.Status == "" {
 			quota.Status = quotaUnknown
 		}
+		reason := "等待额度探测"
+		if quota.ManagedRest && quota.RestUntil != nil && quota.RestUntil.After(time.Now()) {
+			reason = fmt.Sprintf("强制休眠至 %s", quota.RestUntil.UTC().Format(time.RFC3339))
+		}
 		credentials = append(credentials, credentialState{
 			Provider: provider, Account: maskAccount(firstText(file.Email, file.Account, file.Name)), AuthIndex: file.AuthIndex,
-			CurrentTier: current, ProposedTier: current, Reason: "等待额度探测", Quota: quota,
-			Disabled: file.Disabled, Unavailable: file.Unavailable,
+			CurrentTier: current, ProposedTier: current, Reason: reason, Quota: quota,
+			Disabled: file.Disabled, ProposedDisabled: file.Disabled, Unavailable: file.Unavailable,
 		})
 	}
 	sortCredentials(credentials)
@@ -424,6 +383,9 @@ func failedQuota(previous quotaSnapshot, probeErr error, threshold int, now time
 }
 
 func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapshot, now time.Time) (tierName, string) {
+	if providerOf(file) == "antigravity" && quota.ManagedRest && quota.RestUntil != nil && quota.RestUntil.After(now) {
+		return tierPaused, fmt.Sprintf("强制休眠至 %s", quota.RestUntil.UTC().Format(time.RFC3339))
+	}
 	if file.Disabled {
 		return tierPaused, "凭证已由外部停用，不自动恢复"
 	}
@@ -492,13 +454,13 @@ func (r *runtime) applyPlan(ctx context.Context, files []authFile, result plan) 
 		if err := json.Unmarshal(document.JSON, &root); err != nil {
 			return err
 		}
-		if credential.ProposedTier != tierPaused && !file.Disabled && root["disabled"] == true {
+		if !credential.ProposedDisabled && !file.Disabled && root["disabled"] == true {
 			return fmt.Errorf("credential %s was disabled after planning", credential.AuthIndex)
 		}
 		root["priority"] = credential.ProposedTier.priority()
-		// A managed pause must be runtime-ineligible so CPA can evict any
-		// session-affinity binding. Promotion writes the inverse atomically.
-		root["disabled"] = credential.ProposedTier == tierPaused
+		// Enablement and tier are independent. Only the usage-event transaction
+		// hard-disables a managed geo rest; inspections retain priority=-1.
+		root["disabled"] = credential.ProposedDisabled
 		root["credential_tier_router"] = map[string]any{
 			"managed": true, "tier": credential.ProposedTier, "updated_at": time.Now().UTC().Format(time.RFC3339),
 		}
@@ -524,14 +486,10 @@ func (r *runtime) updateSettings(next settings) error {
 	r.commitMu.Lock()
 	r.mu.Lock()
 	previous := r.state.Settings
-	previousReturn := r.state.EgressReturnAt
 	r.state.Settings = next
-	if next.Geo400ReturnHours == 0 {
-		r.state.EgressReturnAt = nil
-	}
 	err := r.store.save(r.state)
 	if err != nil {
-		r.state.Settings, r.state.EgressReturnAt = previous, previousReturn
+		r.state.Settings = previous
 	} else {
 		r.latest = plan{}
 	}

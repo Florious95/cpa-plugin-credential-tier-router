@@ -72,16 +72,17 @@ type quotaSnapshot struct {
 }
 
 type credentialState struct {
-	Provider     string        `json:"provider"`
-	Account      string        `json:"account"`
-	AuthIndex    string        `json:"auth_index"`
-	CurrentTier  tierName      `json:"current_tier"`
-	ProposedTier tierName      `json:"proposed_tier"`
-	Reason       string        `json:"reason"`
-	Quota        quotaSnapshot `json:"quota"`
-	Disabled     bool          `json:"disabled"`
-	Unavailable  bool          `json:"unavailable"`
-	Changed      bool          `json:"changed"`
+	Provider         string        `json:"provider"`
+	Account          string        `json:"account"`
+	AuthIndex        string        `json:"auth_index"`
+	CurrentTier      tierName      `json:"current_tier"`
+	ProposedTier     tierName      `json:"proposed_tier"`
+	Reason           string        `json:"reason"`
+	Quota            quotaSnapshot `json:"quota"`
+	Disabled         bool          `json:"disabled"`
+	ProposedDisabled bool          `json:"proposed_disabled"`
+	Unavailable      bool          `json:"unavailable"`
+	Changed          bool          `json:"changed"`
 }
 
 type plan struct {
@@ -108,20 +109,18 @@ type activePoolState struct {
 }
 
 type persistedState struct {
-	ActivePool     map[string]activePoolState `json:"active_pool,omitempty"`
-	Settings       settings                   `json:"settings"`
-	Quota          map[string]quotaSnapshot   `json:"quota"`
-	History        []historyEntry             `json:"history"`
-	EgressReturnAt *time.Time                 `json:"egress_return_at,omitempty"`
+	ActivePool map[string]activePoolState `json:"active_pool,omitempty"`
+	Settings   settings                   `json:"settings"`
+	Quota      map[string]quotaSnapshot   `json:"quota"`
+	History    []historyEntry             `json:"history"`
 }
 
 type dashboardState struct {
-	PluginStatus   string         `json:"plugin_status"`
-	Settings       settings       `json:"settings"`
-	Plan           plan           `json:"plan"`
-	History        []historyEntry `json:"history"`
-	NextProbeAt    *time.Time     `json:"next_probe_at,omitempty"`
-	EgressReturnAt *time.Time     `json:"egress_return_at,omitempty"`
+	PluginStatus string         `json:"plugin_status"`
+	Settings     settings       `json:"settings"`
+	Plan         plan           `json:"plan"`
+	History      []historyEntry `json:"history"`
+	NextProbeAt  *time.Time     `json:"next_probe_at,omitempty"`
 }
 
 type usageEvent struct {
@@ -136,9 +135,4 @@ type usageEvent struct {
 type usageFailure struct {
 	StatusCode int    `json:"StatusCode"`
 	Body       string `json:"Body"`
-}
-
-type egressInvocation struct {
-	Command string
-	Args    []string
 }

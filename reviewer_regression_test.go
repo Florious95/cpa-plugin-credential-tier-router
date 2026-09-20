@@ -139,7 +139,7 @@ func TestReviewRestOwnershipSurvivesProbeAndRecovers(t *testing.T) {
 				}
 			}
 			original := r.state.Quota["a"]
-			if !original.ManagedRest || original.RestUntil == nil || !reviewAuth(t, h, "a").Disabled {
+			if !original.ManagedRest || original.RestUntil == nil || reviewAuth(t, h, "a").Priority != -1 {
 				t.Fatalf("setup did not pause account: %+v", original)
 			}
 			h.quota("a", 80)
@@ -184,7 +184,7 @@ func TestReviewPoolCapAfterProbeFailures(t *testing.T) {
 	}
 }
 
-func TestReviewExistingSoftPauseGetsHardDisabled(t *testing.T) {
+func TestReviewExistingSoftPauseStaysTierOnly(t *testing.T) {
 	r, h := reviewRuntime(t, 1)
 	doc, _ := h.getAuth(context.Background(), "a")
 	var root map[string]any
@@ -197,8 +197,8 @@ func TestReviewExistingSoftPauseGetsHardDisabled(t *testing.T) {
 	h.quota("a", 0)
 	reviewRun(t, r)
 	f := reviewAuth(t, h, "a")
-	if !f.Disabled {
-		t.Fatalf("legacy paused account remains runtime eligible: priority=%d disabled=%v RestUntil=%v; plan.Changes=%d", f.Priority, f.Disabled, r.state.Quota["a"].RestUntil, r.latest.Changes)
+	if f.Disabled || f.Priority != -1 || r.state.Quota["a"].RestUntil == nil {
+		t.Fatalf("tier-only pause was lost: priority=%d disabled=%v RestUntil=%v", f.Priority, f.Disabled, r.state.Quota["a"].RestUntil)
 	}
 }
 
@@ -225,55 +225,6 @@ func TestReviewExpiredRestRestoresRegularWithoutCap(t *testing.T) {
 	f := reviewAuth(t, h, "a")
 	if f.Disabled {
 		t.Fatalf("expired managed rest latest quota=35; plan current=%s proposed=%s changes=%d but disk priority=%d disabled=%v", r.latest.Credentials[0].CurrentTier, r.latest.Credentials[0].ProposedTier, r.latest.Changes, f.Priority, f.Disabled)
-	}
-}
-
-func TestReviewFailedReturnRetainsPendingRecovery(t *testing.T) {
-	r, _ := reviewRuntime(t, 0)
-	previous := runEgressCommand
-	defer func() { runEgressCommand = previous }()
-	calls := 0
-	runEgressCommand = func(context.Context, egressInvocation) error {
-		calls++
-		if calls == 1 {
-			return errors.New("temporary switch command failure")
-		}
-		return nil
-	}
-	r.state.EgressReturnAt = ptrTime(time.Now().Add(-time.Minute))
-	if err := r.maybeReturnEgress(context.Background(), time.Now()); err == nil {
-		t.Fatal("expected injected failure")
-	}
-	if err := r.maybeReturnEgress(context.Background(), time.Now().Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 2 {
-		t.Fatalf("return command failed once; pending deadline=%v calls after next due check=%d; no automatic recovery remains", r.state.EgressReturnAt, calls)
-	}
-}
-
-func TestReviewGeoWindowCountsLatestSameBodyFailures(t *testing.T) {
-	r, _ := reviewRuntime(t, 2)
-	r.state.Settings.Geo400EgressEnabled = true
-	previous := runEgressCommand
-	defer func() { runEgressCommand = previous }()
-	calls := 0
-	runEgressCommand = func(context.Context, egressInvocation) error { calls++; return nil }
-	start := time.Now().UTC()
-	now := start
-	r.geoNow = func() time.Time { return now }
-	for _, event := range []struct {
-		after time.Duration
-		index string
-	}{{0, "a"}, {4 * time.Minute, "a"}, {6 * time.Minute, "b"}} {
-		now = start.Add(event.after)
-		if err := r.handleUsage(context.Background(), reviewGeo(event.index)); err != nil {
-			t.Fatal(err)
-		}
-		r.egressWG.Wait()
-	}
-	if calls != 1 {
-		t.Fatalf("a@0m,a@4m,b@6m same region body; last 5m contains a and b but switch calls=%d; geoAccounts=%v", calls, r.geoAccounts)
 	}
 }
 
@@ -330,7 +281,7 @@ func reviewConcurrentGeoPause(t *testing.T, cap int) {
 	if q.RestUntil == nil {
 		t.Errorf("in-flight quota run overwrote newly created 2h geo rest: quota=%+v", q)
 	}
-	if !f.Disabled {
-		t.Errorf("in-flight quota run undid geo hard disable: priority=%d disabled=%v", f.Priority, f.Disabled)
+	if f.Disabled || f.Priority != -1 {
+		t.Errorf("subsequent inspection must clear disabled but preserve rest: priority=%d disabled=%v", f.Priority, f.Disabled)
 	}
 }
