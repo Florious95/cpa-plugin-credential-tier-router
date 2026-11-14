@@ -1,5 +1,5 @@
 PLUGIN_NAME ?= credential-tier-router
-VERSION ?= 0.4.6
+VERSION ?= 0.4.7
 BUILD_DIR ?= dist
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
