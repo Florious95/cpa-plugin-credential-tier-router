@@ -11,8 +11,8 @@ The embedded Management Center page uses named policies instead of numeric score
 - An Antigravity credential at 0% (or newly paused) records a durable rest deadline, defaulting to 16 hours; early upstream quota recovery does not release it.
 - A failed quota probe keeps the last known result until the configured consecutive-failure threshold is reached, while preserving an active rest deadline.
 - `active_pool_size` (default 4) manages persistent Primary workers per provider. Incumbents keep their seats even at 1% quota or during transient probe failures; strategies rank only reserves filling actual vacancies. Zero disables pool management.
-- Tiers and the hard-disable circuit breaker are independent: managed rest uses priority `-1`, while a Geo-400 burst also immediately writes `disabled=true` to break CPA affinity. The following inspection restores `disabled=false` while keeping priority `-1` until rest expires.
-- The usage plugin passively matches Antigravity HTTP 400 region failures and rests only the affected credential for two hours by default. The plugin has no network-switching responsibility and never launches external commands.
+- Tiers and the hard-disable circuit breaker are independent: managed rest uses priority `-1`, while a matching regional400 or failed Antigravity403 also immediately writes `disabled=true` to break CPA affinity. The following inspection restores `disabled=false` while keeping priority `-1` until rest expires.
+- The usage plugin passively matches Antigravity HTTP400 region failures and all failed HTTP403 responses, resting only the affected credential for two hours by default. The plugin has no network-switching responsibility and never launches external commands.
 - Credential updates preserve the complete auth document and change only managed scheduling fields.
 - Nested backup files are excluded from scheduling and writeback.
 - Credentials within the same tier remain available to CPA's normal round-robin selection.
@@ -52,20 +52,22 @@ plugins:
       geo400_rest_hours: 2
 ```
 
-`active_pool_size` sets the Primary admission target independently for each configured provider. `rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records whose status is 400 and whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive).
+`active_pool_size` sets the Primary admission target independently for each configured provider. `rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records with HTTP403 regardless of body, or HTTP400 whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive). Both use `geo400_rest_hours` (default2 hours).
 
 The first configuration card contains the original policies and base settings. The second, independent **在岗与休眠** card contains the worker target, exhaustion-rest duration, and Geo-400 rest duration.
 
 ### Managed rest lifecycle
 
-1. A matching Geo-400 immediately writes `priority:-1` and `disabled:true` together and records a durable `geo400_rest_hours` deadline (default 2 hours). Reserve admission does not undo this hard-disable in the same event.
+1. A matching regional400 or failed Antigravity403 immediately writes `priority:-1` and `disabled:true` together and records a durable `geo400_rest_hours` deadline (default 2 hours). Reserve admission does not undo this hard-disable in the same event.
 2. The next inspection (default 15 minutes) writes `disabled:false`, retaining `priority:-1`. This recovery runs before slow quota probes, and also runs when ordinary Auto Apply is off; in that case only existing managed-rest credentials are touched, without reserve admission.
 3. During rest the page displays **强制休眠至…** with remaining time, even if the quota probe is unknown or retrying. Neither early quota recovery nor repeated errors extends/releases the existing rest.
 4. At or after the deadline, priority alone returns to a usable tier (normally Backup 200, or Primary 400 if an enabled pool has a vacancy). Failed writeback keeps durable recovery ownership for the next attempt or restart. Genuine external disables without managed-rest ownership are never cleared.
 
+HTTP403 handling includes identity-verification and TOS errors. Managed-rest recovery can release a native terminal disable; waiting two hours or receiving quota data does not establish that verification or a TOS suspension has been resolved.
+
 Old network-control configuration fields are ignored on load and disappear on the next state save. There are no network commands, return timers, network management routes, or network controls.
 
-Start with `auto_apply: false`, open **Credential Tiers** in Management Center, refresh quota, and review the preview before enabling automatic writeback. The region-400 usage listener is passive and does not depend on the quota probe timer.
+Start with `auto_apply: false`, open **Credential Tiers** in Management Center, refresh quota, and review the preview before enabling automatic writeback. The regional400/403 usage listener is passive and does not depend on the quota probe timer.
 
 ## Persistent Primary workers (v0.4.5)
 
@@ -78,11 +80,11 @@ vacancies = max(0, active_pool_size - surviving members)
 
 - **Keep:** a worker with positive quota, unknown quota, no snapshot, or transient probe failures below `failure_threshold` retains priority 400. Idle 100% reserves never replace it. Unprobed/retrying reserves cannot acquire a seat.
 - **Leave:** explicit quota `<=0`, an unexpired rest, external disable/manual pause, host unavailability/deletion, or consecutive probe failures reaching `failure_threshold` release the seat. The failure threshold is a configured circuit-breaker policy, not proof of upstream account death; even a widespread probe outage reaching it releases affected workers.
-- **Replace:** only the resulting vacancies are filled. Recovered former workers wait in Backup (200) rather than reclaiming occupied seats. Geo-400 retirement and cache-based replacement do not wait for an in-flight quota probe.
+- **Replace:** only the resulting vacancies are filled. Recovered former workers wait in Backup (200) rather than reclaiming occupied seats. Regional400/403 retirement and cache-based replacement do not wait for an in-flight quota probe.
 - **Resize:** increasing the target fills additional vacancies; reducing it to a positive number never evicts surviving workers. For example, 4→2 retains all four until departures drain the excess. The target is therefore not a hard cap during shrink or migration. Setting it to **0 explicitly opts out**: policies directly assign tiers and the sticky-worker guarantee is disabled.
 - **Migrate/restart:** only a missing provider entry bootstraps from existing priority-400 workers, including unprobed ones. An initialized empty pool stays initialized. A preserved state file survives restarts/hot reloads; existing membership repairs drifted auth priorities. Removing the state file discards this identity. No attempt is made to reconstruct past workers from cumulative call counts.
 - **Commit/recover:** desired membership and quota/rest state are saved before auth writes. Departures are written before admissions; a failed write stops promotion. The next apply/reload replays the durable intent. A failed state save prevents promotion; unreadable/invalid state fails closed instead of overwriting it as a fresh installation. Successful complete inventory is required before treating an absent auth as deleted.
-- **Preview:** quota observations are refreshed, but membership and auth files are not changed. Automatic replay requires `auto_apply: true`; explicit Apply is available otherwise. Passive geo-400 safety retirement remains independent of Auto Apply.
+- **Preview:** quota observations are refreshed, but membership and auth files are not changed. Automatic replay requires `auto_apply: true`; explicit Apply is available otherwise. Passive regional400/403 safety retirement remains independent of Auto Apply.
 
 This prevents plugin-induced worker churn; it does not pin individual conversations inside CPA or guarantee an upstream provider's Prompt Cache lifetime. CPA still selects among the surviving Primary workers.
 
@@ -107,7 +109,7 @@ Go 1.24 and a C compiler are required because CPA's native plugin ABI uses cgo.
 make test
 make vet
 go test -race ./...
-make package VERSION=0.4.7
+make package VERSION=0.4.8
 ```
 
 The package target writes a platform zip and checksum into `dist/`.
