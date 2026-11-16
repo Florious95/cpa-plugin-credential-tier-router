@@ -69,6 +69,8 @@ POST /v0/management/plugins/credential-tier-router/pool/restore
 
 Manual restore uses the existing quota observations and scheduling policy, without making a model or quota request. It restores pre-lock eligible AG accounts to normal worker/reserve priorities; original external disables and still-active ordinary rests are preserved. It reads current auth documents rather than restoring old tokens/proxies. A new429 during restoration wins; partial failures retain the gate and reapply disables. Calling GET, saving settings or toggling a native account flag never clears the latch.
 
+**Native cooldown side effect:** CPA8.0.70 `conductor_lifecycle.go` calls `clearCooldownStateForAuth` for disabled auths. This plugin does not call a cooldown-reset API, but the required hard disable can itself clear native runtime cooldowns. Strict cooldown preservation requires host changes; it is not an implementation guarantee.
+
 **Safety boundary:** keep CPA's native AG429 `stop-and-cooldown` rule. Usage delivery is asynchronous: the scheduler refusal protects later selections but cannot retract already-inflight requests. The host supports only individual full-document auth saves, not batch transactions or field CAS; the guarantee is a durable logical latch plus replayable per-file projection, not filesystem atomicity or immunity to concurrent core token writes. Do not unload/fuse/downgrade the protection plugin while locked; the scheduler slot must not conflict with another scheduler plugin. Mixed-provider routes containing AG fail closed while locked. OAuth maintenance/admin API-call traffic is outside this model-selection gate.
 
 ### Managed rest lifecycle

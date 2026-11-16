@@ -111,6 +111,8 @@ func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, erro
 				err = errors.New("AG认证文档不是JSON对象")
 			}
 			if err == nil {
+				// CPA may clear runtime cooldowns on hard-disable; this host API
+				// exposes no cooldown-preserving policy patch or batch transaction.
 				root["disabled"], root["priority"] = true, -1
 				var updated []byte
 				if updated, err = json.Marshal(root); err == nil {
@@ -212,7 +214,7 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	oldQuota, oldPools, oldSince, oldHistory := r.state.Quota, r.state.ActivePool, r.state.Pool429Since, r.state.History
 	r.state.Quota, r.state.ActivePool = cache, next
 	r.state.PoolLocked429, r.state.Pool429Since, r.state.Pool429Before = false, nil, nil
-	r.state.History = append([]historyEntry{{At: time.Now().UTC(), Trigger: "429人工恢复", Changes: result.Changes, Summary: "已人工解除全池熔断；原停用/普通休眠及上游冷却保持"}}, oldHistory...)
+	r.state.History = append([]historyEntry{{At: time.Now().UTC(), Trigger: "429人工恢复", Changes: result.Changes, Summary: "已人工解除全池熔断；原停用与普通休眠保留；未调用冷却重置接口"}}, oldHistory...)
 	if len(r.state.History) > 12 {
 		r.state.History = r.state.History[:12]
 	}
