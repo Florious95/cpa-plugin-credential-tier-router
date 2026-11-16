@@ -13,6 +13,7 @@ The embedded Management Center page uses named policies instead of numeric score
 - `active_pool_size` (default 4) manages persistent Primary workers per provider. Incumbents keep their seats even at 1% quota or during transient probe failures; strategies rank only reserves filling actual vacancies. Zero disables pool management.
 - Tiers and the hard-disable circuit breaker are independent: managed rest uses priority `-1`, while a matching regional400 or failed Antigravity403 also immediately writes `disabled=true` to break CPA affinity. The following inspection restores `disabled=false` while keeping priority `-1` until rest expires.
 - The usage plugin passively matches Antigravity HTTP400 region failures and all failed HTTP403 responses, resting only the affected credential for two hours by default. The plugin has no network-switching responsibility and never launches external commands.
+- **Unreleased:** any failed Antigravity HTTP429 locks the entire AG pool indefinitely (`pool_locked_429=true`, every AG `disabled=true`/`priority=-1`). Only the explicit manual restore can unlock it; Codex credentials are not touched by the breaker/restore.
 - Credential updates preserve the complete auth document and change only managed scheduling fields.
 - Nested backup files are excluded from scheduling and writeback.
 - Credentials within the same tier remain available to CPA's normal round-robin selection.
@@ -55,6 +56,20 @@ plugins:
 `active_pool_size` sets the Primary admission target independently for each configured provider. `rest_duration_hours` controls the Antigravity post-exhaustion hold. The usage plugin matches failed Antigravity records with HTTP403 regardless of body, or HTTP400 whose body contains both `FAILED_PRECONDITION` and `User location is not supported for the API use.` (case-insensitive). Both use `geo400_rest_hours` (default2 hours).
 
 The first configuration card contains the original policies and base settings. The second, independent **在岗与休眠** card contains the worker target, exhaustion-rest duration, and Geo-400 rest duration.
+
+### Antigravity429 manual pool lock (unreleased)
+
+Every failed Antigravity usage record with status429 triggers the lock, regardless of body, trigger account, configured provider selection, Auto Apply or worker target. Genuine quota429 also triggers it. The persistent flag has **no expiration**: fifteen-minute inspections, two-hour rests, quota200, Apply and plugin reload cannot unlock it. Automatic AG quota probes are skipped while locked; Codex retains its normal policy. Newly discovered AG credentials are paused and require separate enablement after release.
+
+The dashboard shows a persistent warning and a confirmed manual-release action. The authenticated endpoint is:
+
+```text
+POST /v0/management/plugins/credential-tier-router/pool/restore
+```
+
+Manual restore uses the existing quota observations and scheduling policy, without making a model or quota request. It restores pre-lock eligible AG accounts to normal worker/reserve priorities; original external disables and still-active ordinary rests are preserved. It reads current auth documents rather than restoring old tokens/proxies. A new429 during restoration wins; partial failures retain the gate and reapply disables. Calling GET, saving settings or toggling a native account flag never clears the latch.
+
+**Safety boundary:** keep CPA's native AG429 `stop-and-cooldown` rule. Usage delivery is asynchronous: the scheduler refusal protects later selections but cannot retract already-inflight requests. The host supports only individual full-document auth saves, not batch transactions or field CAS; the guarantee is a durable logical latch plus replayable per-file projection, not filesystem atomicity or immunity to concurrent core token writes. Do not unload/fuse/downgrade the protection plugin while locked; the scheduler slot must not conflict with another scheduler plugin. Mixed-provider routes containing AG fail closed while locked. OAuth maintenance/admin API-call traffic is outside this model-selection gate.
 
 ### Managed rest lifecycle
 

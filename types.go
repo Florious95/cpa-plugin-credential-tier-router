@@ -108,19 +108,31 @@ type activePoolState struct {
 	Generation uint64   `json:"generation"`
 }
 
+type pool429Policy struct {
+	Disabled bool `json:"disabled"`
+	Priority int  `json:"priority"`
+}
+
 type persistedState struct {
-	ActivePool map[string]activePoolState `json:"active_pool,omitempty"`
-	Settings   settings                   `json:"settings"`
-	Quota      map[string]quotaSnapshot   `json:"quota"`
-	History    []historyEntry             `json:"history"`
+	PoolLocked429     bool                       `json:"pool_locked_429"`
+	Pool429Since      *time.Time                 `json:"pool_429_since,omitempty"`
+	Pool429Generation uint64                     `json:"pool_429_generation,omitempty"`
+	Pool429Before     map[string]pool429Policy   `json:"pool_429_before,omitempty"`
+	ActivePool        map[string]activePoolState `json:"active_pool,omitempty"`
+	Settings          settings                   `json:"settings"`
+	Quota             map[string]quotaSnapshot   `json:"quota"`
+	History           []historyEntry             `json:"history"`
 }
 
 type dashboardState struct {
-	PluginStatus string         `json:"plugin_status"`
-	Settings     settings       `json:"settings"`
-	Plan         plan           `json:"plan"`
-	History      []historyEntry `json:"history"`
-	NextProbeAt  *time.Time     `json:"next_probe_at,omitempty"`
+	PoolLocked429     bool           `json:"pool_locked_429"`
+	Pool429Since      *time.Time     `json:"pool_429_since,omitempty"`
+	Pool429Generation uint64         `json:"pool_429_generation,omitempty"`
+	PluginStatus      string         `json:"plugin_status"`
+	Settings          settings       `json:"settings"`
+	Plan              plan           `json:"plan"`
+	History           []historyEntry `json:"history"`
+	NextProbeAt       *time.Time     `json:"next_probe_at,omitempty"`
 }
 
 type usageEvent struct {

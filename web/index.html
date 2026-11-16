@@ -32,6 +32,11 @@
       <button class="button secondary" id="retryConnection" type="button">重新连接</button>
     </section>
 
+    <section class="connection-notice panel" id="poolLockNotice" hidden role="alert">
+      <div><strong>Antigravity 全池 429 熔断</strong><p>所有 AG 调用已锁定，不会自动恢复。请先排查敏感内容或配额，再人工解除；原停用与普通休眠保留。</p></div>
+      <button class="button secondary" id="restorePoolButton" type="button">人工解除全池熔断</button>
+    </section>
+
     <section class="toolbar panel" aria-label="凭证筛选">
       <label class="field compact"><span>提供商</span><select id="providerFilter"><option value="all">全部提供商</option><option value="codex">Codex</option><option value="antigravity">Antigravity</option></select></label>
       <label class="field compact"><span>层级</span><select id="tierFilter"><option value="all">全部层级</option><option value="primary">主用</option><option value="regular">常规</option><option value="backup">备用</option><option value="paused">暂停</option></select></label>

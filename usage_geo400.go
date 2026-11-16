@@ -97,6 +97,9 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return fmt.Errorf("decode usage event: %w", err)
 	}
+	if event.Failed && event.Failure.StatusCode == 429 && strings.EqualFold(strings.TrimSpace(event.Provider), "antigravity") {
+		return r.tripPool429(ctx)
+	}
 	forbidden := event.Failed && event.Failure.StatusCode == 403 && strings.EqualFold(strings.TrimSpace(event.Provider), "antigravity")
 	if !isAntigravityGeo400(event) && !forbidden {
 		return nil

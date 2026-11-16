@@ -31,7 +31,9 @@ type runtime struct {
 	nextProbe *time.Time
 	geoNow    func() time.Time
 
-	closed bool
+	closed          bool
+	pool429Pending  bool
+	pool429Revision uint64
 }
 
 func newRuntime(host hostAPI) *runtime {
@@ -71,6 +73,8 @@ func (r *runtime) handle(ctx context.Context, method string, request []byte) []b
 		return success(map[string]string{"status": "ok"})
 	case "management.register":
 		return success(managementRegistration())
+	case "scheduler.pick":
+		return r.pickWithPoolLock(request)
 	case "usage.handle":
 		if err := r.handleUsage(ctx, request); err != nil {
 			return failure("invalid_usage", err.Error(), false)
@@ -155,6 +159,11 @@ func (r *runtime) configure(config settings) error {
 	if err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
+	if r.poolLocked429() {
+		if err := r.enforcePoolLock429(context.Background()); err != nil {
+			return err
+		}
+	}
 	if replay {
 		if err := r.reconcileActivePool(context.Background(), "加载工位重放"); err != nil {
 			return err
@@ -203,6 +212,9 @@ func (r *runtime) restartWorker() {
 }
 
 func (r *runtime) scheduledInspection(ctx context.Context, autoApply bool) error {
+	if !autoApply && r.poolLocked429() {
+		return r.enforcePoolLock429(ctx)
+	}
 	// The passive breaker owns recovery independently of tier automation.
 	// Release its one-shot disable before potentially slow upstream probes.
 	if err := r.reconcileManagedRest(ctx); err != nil {
@@ -247,7 +259,7 @@ func registrationResult() map[string]any {
 			"Description":      "Routes Codex and Antigravity credentials through clear primary, regular, backup, and paused tiers.",
 			"ConfigFields":     []any{},
 		},
-		"capabilities": map[string]bool{"management_api": true, "usage_plugin": true},
+		"capabilities": map[string]bool{"management_api": true, "usage_plugin": true, "scheduler": true},
 	}
 }
 
@@ -257,6 +269,7 @@ func managementRegistration() map[string]any {
 			{"Method": "GET", "Path": "/plugins/" + pluginID + "/state"},
 			{"Method": "POST", "Path": "/plugins/" + pluginID + "/preview"},
 			{"Method": "POST", "Path": "/plugins/" + pluginID + "/apply"},
+			{"Method": "POST", "Path": "/plugins/" + pluginID + "/pool/restore"},
 			{"Method": "PUT", "Path": "/plugins/" + pluginID + "/settings"},
 		},
 		"resources": []map[string]string{{"Path": "/status", "Menu": "Credential Tiers", "Description": "Manage Codex and Antigravity credential tiers."}},
@@ -270,15 +283,21 @@ func (r *runtime) dashboard(ctx context.Context) (dashboardState, error) {
 	cfg := r.state.Settings
 	history := append([]historyEntry(nil), r.state.History...)
 	next := r.nextProbe
+	locked := r.state.PoolLocked429 || r.pool429Pending
+	since, generation := r.state.Pool429Since, r.state.Pool429Generation
 	r.mu.Unlock()
-	if len(latest.Credentials) == 0 {
+	if locked || len(latest.Credentials) == 0 {
 		var err error
 		latest, err = r.inspect(ctx)
 		if err != nil {
 			return dashboardState{}, err
 		}
 	}
-	return dashboardState{PluginStatus: "ready", Settings: cfg, Plan: latest, History: history, NextProbeAt: next}, nil
+	status := "ready"
+	if locked {
+		status = "pool_locked_429"
+	}
+	return dashboardState{PoolLocked429: locked, Pool429Since: since, Pool429Generation: generation, PluginStatus: status, Settings: cfg, Plan: latest, History: history, NextProbeAt: next}, nil
 }
 
 func (r *runtime) inspect(ctx context.Context) (plan, error) {
@@ -289,6 +308,7 @@ func (r *runtime) inspect(ctx context.Context) (plan, error) {
 	r.mu.Lock()
 	cfg := r.state.Settings
 	quotaCache := cloneQuota(r.state.Quota)
+	locked := r.state.PoolLocked429 || r.pool429Pending
 	r.mu.Unlock()
 	selectedProviders := providerSet(cfg.Providers)
 	credentials := make([]credentialState, 0)
@@ -297,7 +317,7 @@ func (r *runtime) inspect(ctx context.Context) (plan, error) {
 			continue
 		}
 		provider := providerOf(file)
-		if provider == "" || !selectedProviders[provider] {
+		if provider == "" || (!selectedProviders[provider] && !(locked && provider == "antigravity")) {
 			continue
 		}
 		current := tierFromPriority(file.Priority, file.Disabled)
@@ -309,10 +329,17 @@ func (r *runtime) inspect(ctx context.Context) (plan, error) {
 		if quota.ManagedRest && quota.RestUntil != nil && quota.RestUntil.After(time.Now()) {
 			reason = fmt.Sprintf("强制休眠至 %s", quota.RestUntil.UTC().Format(time.RFC3339))
 		}
+		if locked && provider == "antigravity" {
+			reason = "429 全池熔断：等待人工恢复，不会自动解封"
+		}
+		proposed, disabled := current, file.Disabled
+		if locked && provider == "antigravity" {
+			proposed, disabled = tierPaused, true
+		}
 		credentials = append(credentials, credentialState{
 			Provider: provider, Account: maskAccount(firstText(file.Email, file.Account, file.Name)), AuthIndex: file.AuthIndex,
-			CurrentTier: current, ProposedTier: current, Reason: reason, Quota: quota,
-			Disabled: file.Disabled, ProposedDisabled: file.Disabled, Unavailable: file.Unavailable,
+			CurrentTier: current, ProposedTier: proposed, Reason: reason, Quota: quota,
+			Disabled: file.Disabled, ProposedDisabled: disabled, Unavailable: file.Unavailable,
 		})
 	}
 	sortCredentials(credentials)
@@ -327,6 +354,11 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 		return plan{}, errors.New("已有一轮探测正在执行")
 	}
 	defer r.runMu.Unlock()
+	if r.poolLocked429() {
+		if err := r.enforcePoolLock429(ctx); err != nil {
+			return plan{}, err
+		}
+	}
 	files, err := r.host.listAuth(ctx)
 	if err != nil {
 		return plan{}, err
@@ -338,7 +370,7 @@ func (r *runtime) run(ctx context.Context, apply bool, trigger string) (plan, er
 	providers := providerSet(cfg.Providers)
 	observations := make(map[string]quotaSnapshot)
 	for _, file := range files {
-		if !managedAuthFile(file) || !providers[providerOf(file)] {
+		if !managedAuthFile(file) || !providers[providerOf(file)] || (providerOf(file) == "antigravity" && r.poolLocked429()) {
 			continue
 		}
 		now := time.Now().UTC()
@@ -431,6 +463,11 @@ func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapsh
 }
 
 func (r *runtime) applyPlan(ctx context.Context, files []authFile, result plan) error {
+	return r.applyPlanWithPoolLock(ctx, files, result, false)
+}
+
+// allowLocked is reserved for the explicit manual restore while the routing gate stays closed.
+func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, result plan, allowLocked bool) error {
 	byIndex := make(map[string]authFile, len(files))
 	for _, file := range files {
 		byIndex[file.AuthIndex] = file
@@ -442,10 +479,22 @@ func (r *runtime) applyPlan(ctx context.Context, files []authFile, result plan) 
 		return ordered[i].ProposedTier != tierPrimary && ordered[j].ProposedTier == tierPrimary
 	})
 	for _, credential := range ordered {
+		file := byIndex[credential.AuthIndex]
+		if !allowLocked && providerOf(file) == "antigravity" {
+			r.mu.Lock()
+			locked, pending := r.state.PoolLocked429, r.pool429Pending
+			r.mu.Unlock()
+			if pending && !locked {
+				continue // Preserve original flags until the trip captures ownership.
+			}
+			if locked {
+				credential.ProposedTier, credential.ProposedDisabled = tierPaused, true
+				credential.Changed = file.Priority != -1 || !file.Disabled
+			}
+		}
 		if !credential.Changed {
 			continue
 		}
-		file := byIndex[credential.AuthIndex]
 		document, err := r.host.getAuth(ctx, credential.AuthIndex)
 		if err != nil {
 			return err
