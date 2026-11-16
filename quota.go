@@ -100,7 +100,7 @@ func probeAntigravity(ctx context.Context, host hostAPI, authIndex string, mater
 		"Accept":        {"application/json"},
 		"Authorization": {"Bearer " + token},
 		"Content-Type":  {"application/json"},
-		"User-Agent":    {"antigravity/cli/1.0.8 linux/amd64"},
+		"User-Agent":    {"antigravity/hub/2.23.0 darwin/arm64"},
 	}
 	var body []byte
 	if material.ProjectID != "" {
