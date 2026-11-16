@@ -69,6 +69,16 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 			return jsonManagementResponse(status, map[string]string{"error": safeError(err)}), nil
 		}
 		return jsonManagementResponse(http.StatusOK, result), nil
+	case method == http.MethodPost && path == "/pool/restore":
+		result, err := r.restorePool429(ctx)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, errPool429Changed) {
+				status = http.StatusConflict
+			}
+			return jsonManagementResponse(status, map[string]string{"error": safeError(err)}), nil
+		}
+		return jsonManagementResponse(http.StatusOK, map[string]any{"pool_locked_429": false, "plan": result}), nil
 	case method == http.MethodPost && path == "/apply":
 		result, err := r.run(ctx, true, "手动应用")
 		if err != nil {
@@ -85,6 +95,9 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 			r.mu.Lock()
 			current := normalizeSettings(r.state.Settings)
 			r.mu.Unlock()
+			if value, exists := fields["pool_lock_429_enabled"]; !exists || strings.TrimSpace(string(value)) == "null" {
+				next.PoolLock429Enabled = current.PoolLock429Enabled
+			}
 			if _, exists := fields["active_pool_size"]; !exists {
 				next.ActivePoolSize = current.ActivePoolSize
 			}

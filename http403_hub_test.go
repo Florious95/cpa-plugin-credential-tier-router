@@ -113,7 +113,7 @@ func TestFixHTTP403BreakerScope(t *testing.T) {
 		{"otherProvider", "codex", "", 403, true, false},
 		{"notFailed", "antigravity", "", 403, false, false},
 		{"unauthorized", "antigravity", "", 401, true, false},
-		{"quota", "antigravity", "", 429, true, false},
+		{"quotaPoolLock", "antigravity", "", 429, true, true},
 		{"server", "antigravity", "", 503, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -132,7 +132,10 @@ func TestFixHTTP403BreakerScope(t *testing.T) {
 			if h.file.Disabled != tc.want {
 				t.Fatalf("disabled=%v want=%v", h.file.Disabled, tc.want)
 			}
-			if tc.want && !r.state.Quota["fixture"].RestUntil.Equal(now.Add(7*time.Hour)) {
+			if tc.status == 429 && (!r.state.PoolLocked429 || r.state.Quota["fixture"].ManagedRest) {
+				t.Fatal("429 must use the indefinite pool lock, not timed403 rest")
+			}
+			if tc.want && tc.status != 429 && !r.state.Quota["fixture"].RestUntil.Equal(now.Add(7*time.Hour)) {
 				t.Fatal("breaker did not reuse geo400_rest_hours")
 			}
 		})

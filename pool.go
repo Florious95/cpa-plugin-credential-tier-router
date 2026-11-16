@@ -291,8 +291,16 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 	cfg := normalizeSettings(r.state.Settings)
 	cache := cloneQuota(r.state.Quota)
 	pools := cloneActivePool(r.state.ActivePool)
+	locked := r.state.PoolLocked429 || r.pool429Pending
 	r.mu.Unlock()
+	ag := map[string]bool{}
+	for _, file := range files {
+		ag[file.AuthIndex] = providerOf(file) == "antigravity"
+	}
 	for id, observation := range observations {
+		if locked && ag[id] {
+			continue // A pre-lock probe may not overwrite the locked AG snapshot.
+		}
 		// A geo rest committed while probing is newer than this observation.
 		// Keep even an expired deadline until planPool resolves its ownership.
 		if previous := cache[id]; previous.RestUntil != nil {
@@ -302,6 +310,10 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 	}
 	observedCache := cloneQuota(cache)
 	planningConfig := cfg
+	if locked {
+		files = slices.DeleteFunc(slices.Clone(files), func(f authFile) bool { return providerOf(f) == "antigravity" })
+		planningConfig.Providers = slices.DeleteFunc(slices.Clone(cfg.Providers), func(p string) bool { return p == "antigravity" })
+	}
 	if managedOnly {
 		// Recovery remains available with auto-apply off, but cannot rebalance
 		// unrelated credentials, bootstrap a pool, or admit new members.

@@ -20,6 +20,11 @@
           <input id="autoApply" type="checkbox" role="switch">
           <span class="switch" aria-hidden="true"></span>
         </label>
+        <label class="switch-field" title="自动保存；关闭只跳过后续429熔断，已锁定仍须人工恢复">
+          <span>429 全池熔断保护</span>
+          <input id="poolLock429Enabled" type="checkbox" role="switch" checked disabled>
+          <span class="switch" aria-hidden="true"></span>
+        </label>
         <button class="button secondary" id="refreshButton" type="button">刷新额度</button>
       </div>
     </header>
@@ -30,6 +35,11 @@
         <p id="connectionMessage">请返回 CPA 管理中心重新登录并启用“记住密码”，然后刷新本页面。</p>
       </div>
       <button class="button secondary" id="retryConnection" type="button">重新连接</button>
+    </section>
+
+    <section class="connection-notice panel" id="poolLockNotice" hidden role="alert">
+      <div><strong>Antigravity 全池 429 熔断</strong><p>所有 AG 调用已锁定，不会自动恢复。请先排查敏感内容或配额，再人工解除；原停用与普通休眠保留。</p></div>
+      <button class="button secondary" id="restorePoolButton" type="button">人工解除全池熔断</button>
     </section>
 
     <section class="toolbar panel" aria-label="凭证筛选">
