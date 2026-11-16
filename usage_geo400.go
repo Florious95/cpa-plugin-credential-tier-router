@@ -31,8 +31,12 @@ func (r *runtime) pauseGeoCredential(ctx context.Context, event usageEvent) erro
 	}
 	root["priority"] = -1
 	root["disabled"] = true
+	reason := "geo_400"
+	if event.Failure.StatusCode == 403 {
+		reason = "http_403"
+	}
 	root["credential_tier_router"] = map[string]any{
-		"managed": true, "tier": string(tierPaused), "reason": "geo_400",
+		"managed": true, "tier": string(tierPaused), "reason": reason,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	updated, err := json.Marshal(root)
@@ -93,8 +97,13 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return fmt.Errorf("decode usage event: %w", err)
 	}
-	if !isAntigravityGeo400(event) {
+	forbidden := event.Failed && event.Failure.StatusCode == 403 && strings.EqualFold(strings.TrimSpace(event.Provider), "antigravity")
+	if !isAntigravityGeo400(event) && !forbidden {
 		return nil
+	}
+	trigger := "地区400"
+	if forbidden {
+		trigger = "HTTP403"
 	}
 	index := firstText(event.AuthIndex, event.AuthID)
 	if index == "" {
@@ -116,16 +125,16 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	// a replacement without durable recovery intent.
 	pauseErr := r.pauseGeoCredential(ctx, event)
 	if pauseErr != nil {
-		r.recordHistory("地区400", 0, 1, "即时熔断失败："+safeError(pauseErr))
+		r.recordHistory(trigger, 0, 1, "即时熔断失败："+safeError(pauseErr))
 	} else {
 		r.markLatestGeoPaused(event, until)
-		r.recordHistory("地区400", 1, 0, fmt.Sprintf("已熔断并强制休眠至 %s；下次巡检解除禁用但保持暂停", until.Format(time.RFC3339)))
+		r.recordHistory(trigger, 1, 0, fmt.Sprintf("已熔断并强制休眠至 %s；下次巡检解除禁用但保持暂停", until.Format(time.RFC3339)))
 	}
 	if cfg.ActivePoolSize > 0 && pauseErr == nil && persistErr == nil {
 		// This event must leave its own credential hard-disabled. Only a later
 		// reconciliation may release disabled while keeping the rest priority.
-		if _, err := r.commitPoolWithPause(ctx, nil, true, "地区400补位", index); err != nil {
-			r.recordHistory("地区400", 0, 1, "活跃池补位失败："+safeError(err))
+		if _, err := r.commitPoolWithPause(ctx, nil, true, trigger+"补位", index); err != nil {
+			r.recordHistory(trigger, 0, 1, "活跃池补位失败："+safeError(err))
 		}
 	}
 	saveErr := r.persistState()
