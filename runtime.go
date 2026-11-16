@@ -157,16 +157,26 @@ func (r *runtime) configure(config settings) error {
 	r.mu.Unlock()
 	r.commitMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("save state: %w", err)
+		if !r.poolLocked429() {
+			return fmt.Errorf("save state: %w", err)
+		}
+		r.recordHistory("429启动保护", 0, 1, "状态重写失败；保留调度拒绝闸与人工恢复端点："+safeError(err))
 	}
 	if r.poolLocked429() {
 		if err := r.enforcePoolLock429(context.Background()); err != nil {
-			return err
+			// A partial projection must not prevent capability registration:
+			// otherwise the host falls back to unprotected native scheduling.
+			r.recordHistory("429启动保护", 0, 1, "停用投影待重试；保护闸仍生效："+safeError(err))
+			_ = r.persistState()
 		}
 	}
 	if replay {
 		if err := r.reconcileActivePool(context.Background(), "加载工位重放"); err != nil {
-			return err
+			if !r.poolLocked429() {
+				return err
+			}
+			r.recordHistory("429启动保护", 0, 1, "工位重放待重试；保护闸仍生效："+safeError(err))
+			_ = r.persistState()
 		}
 	}
 	r.restartWorker()

@@ -25,6 +25,9 @@ type pool429FixtureHost struct {
 	httpSeen chan struct{}
 	httpWait chan struct{}
 	httpN    int
+	listN    int
+	listFail int
+	onList   func(int)
 }
 
 func newPool429Fixture(t *testing.T) (*runtime, *pool429FixtureHost) {
@@ -53,6 +56,18 @@ func newPool429Fixture(t *testing.T) (*runtime, *pool429FixtureHost) {
 	return r, h
 }
 func (h *pool429FixtureHost) listAuth(context.Context) ([]authFile, error) {
+	h.mu.Lock()
+	h.listN++
+	n, hook := h.listN, h.onList
+	if h.listFail > 0 {
+		h.listFail--
+		h.mu.Unlock()
+		return nil, errors.New("fixture temporary list failure")
+	}
+	h.mu.Unlock()
+	if hook != nil {
+		hook(n)
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var files []authFile
@@ -379,6 +394,136 @@ func TestPool429ImplementationPendingTripKeepsOriginalEligibility(t *testing.T) 
 		if f.Provider == "antigravity" && id != "fixture-ag-19" && f.Disabled {
 			t.Fatal("the pending guard polluted original eligibility with its own disable")
 		}
+	}
+}
+
+func TestPool429ReviewListFailureDoesNotCaptureBefore(t *testing.T) {
+	r, h := newPool429Fixture(t)
+	h.listFail = 1
+	if err := r.tripPool429(context.Background()); err == nil {
+		t.Fatal("temporary inventory failure hidden")
+	}
+	if !r.poolLocked429() || r.state.Pool429Before != nil {
+		t.Fatal("failed inventory initialized before and lost original eligibility")
+	}
+	loaded, err := r.store.load()
+	if err != nil || !loaded.PoolLocked429 || loaded.Pool429Before != nil {
+		t.Fatal("failed inventory polluted durable before")
+	}
+	if err := r.scheduledInspection(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if r.state.Pool429Before["fixture-ag-00"].Disabled {
+		t.Fatal("first successful inventory did not capture original enabled policy")
+	}
+	if _, err := r.restorePool429(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h.files["fixture-ag-00"].Disabled || h.files["fixture-ag-00"].Priority != 400 {
+		t.Fatal("original healthy worker was stranded after retry/restore")
+	}
+}
+
+func TestPool429ReviewLateArrivalDuringRestore(t *testing.T) {
+	for _, ownedRest := range []bool{false, true} {
+		t.Run(fmt.Sprintf("staleRest=%v", ownedRest), func(t *testing.T) {
+			r, h := newPool429Fixture(t)
+			pool429Send(t, r)
+			injectAt := h.listN + 2 // After restore's protective snapshot, at planning inventory.
+			h.onList = func(n int) {
+				if n != injectAt {
+					return
+				}
+				h.mu.Lock()
+				h.files["late-import"] = authFile{Name: "late-import.json", AuthIndex: "late-import", Provider: "antigravity", Priority: 400}
+				h.docs["late-import"] = json.RawMessage(`{"type":"antigravity","priority":400,"disabled":false}`)
+				h.mu.Unlock()
+				remaining, until := 80, time.Now().Add(2*time.Hour)
+				r.mu.Lock()
+				r.state.Quota["late-import"] = quotaSnapshot{Remaining: &remaining, Status: quotaReady, ManagedRest: ownedRest}
+				if ownedRest {
+					q := r.state.Quota["late-import"]
+					q.RestUntil = &until
+					r.state.Quota["late-import"] = q
+				}
+				r.mu.Unlock()
+			}
+			if _, err := r.restorePool429(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			f := h.files["late-import"]
+			if !f.Disabled || f.Priority != -1 {
+				t.Fatal("unknown-before import piggybacked on manual restore")
+			}
+			if err := r.scheduledInspection(context.Background(), false); err != nil {
+				t.Fatal(err)
+			}
+			if !h.files["late-import"].Disabled {
+				t.Fatal("stale rest ownership automatically enabled the new import")
+			}
+		})
+	}
+}
+
+func TestPool429ReviewDegradedBootKeepsCapabilities(t *testing.T) {
+	for _, stateFailure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stateFailure=%v", stateFailure), func(t *testing.T) {
+			r, h := newPool429Fixture(t)
+			if !stateFailure {
+				h.fail["fixture-ag-03.json"] = true
+			}
+			_ = r.tripPool429(context.Background())
+			loaded, err := r.store.load()
+			if err != nil || !loaded.PoolLocked429 {
+				t.Fatal("missing persisted reboot intent")
+			}
+			loaded.Settings.AutoApply = true
+			loaded.ActivePool = map[string]activePoolState{"antigravity": {Members: []string{"fixture-ag-00"}, Generation: 1}}
+			boot := &runtime{host: h, state: loaded, store: r.store, geoNow: time.Now}
+			if stateFailure {
+				boot.store.path = t.TempDir()
+			}
+			defer boot.shutdown()
+			var registration struct {
+				Result struct {
+					Capabilities map[string]bool `json:"capabilities"`
+				}
+				Error any
+			}
+			if err := json.Unmarshal(boot.handle(context.Background(), "plugin.register", nil), &registration); err != nil || registration.Error != nil || !registration.Result.Capabilities["scheduler"] || !registration.Result.Capabilities["management_api"] {
+				t.Fatal("projection failure prevented protective capability registration")
+			}
+			var routes struct {
+				Result struct {
+					Routes []struct{ Method, Path string } `json:"routes"`
+				}
+			}
+			json.Unmarshal(boot.handle(context.Background(), "management.register", nil), &routes)
+			registeredRestore := false
+			for _, route := range routes.Result.Routes {
+				registeredRestore = registeredRestore || (route.Method == "POST" && route.Path == "/plugins/credential-tier-router/pool/restore")
+			}
+			if !registeredRestore {
+				t.Fatal("degraded boot omitted registered restore route")
+			}
+			var pick struct {
+				Result struct{ Handled, Reject bool }
+			}
+			json.Unmarshal(boot.handle(context.Background(), "scheduler.pick", []byte(`{"Provider":"antigravity"}`)), &pick)
+			if !pick.Result.Handled || !pick.Result.Reject {
+				t.Fatal("degraded restart lost scheduler refusal")
+			}
+			if response := pool429Request(t, boot, "POST", "/pool/restore"); response.StatusCode == 404 || !boot.poolLocked429() {
+				t.Fatal("restore route disappeared or failed persistence unlocked pool")
+			}
+			observable := false
+			for _, entry := range boot.state.History {
+				observable = observable || (entry.Trigger == "429启动保护" && entry.Errors > 0)
+			}
+			if !observable {
+				t.Fatal("degraded boot was not observable")
+			}
+		})
 	}
 }
 

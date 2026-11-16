@@ -74,6 +74,9 @@ func (r *runtime) tripPool429(ctx context.Context) error {
 // filesystem batch transaction. Keep disabling other accounts after any error.
 func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, error) {
 	files, listErr := r.host.listAuth(ctx)
+	if listErr != nil {
+		return 0, listErr // No inventory means no original-policy snapshot yet.
+	}
 	r.mu.Lock()
 	initial := r.state.Pool429Before == nil
 	if initial {
@@ -85,13 +88,16 @@ func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, erro
 				previous := pool429Policy{Disabled: true, Priority: -1}
 				if initial {
 					previous = pool429Policy{Disabled: file.Disabled, Priority: file.Priority}
+				} else if q, exists := r.state.Quota[file.AuthIndex]; exists {
+					q.ManagedRest = false // A new import cannot inherit old auto-enable ownership.
+					r.state.Quota[file.AuthIndex] = q
 				}
 				r.state.Pool429Before[file.AuthIndex] = previous // New arrivals need separate operator enablement.
 			}
 		}
 	}
 	r.mu.Unlock()
-	failures := []error{listErr, r.persistState()}
+	failures := []error{r.persistState()}
 	changed := 0
 	for _, file := range files {
 		if providerOf(file) != "antigravity" {
@@ -169,18 +175,39 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	before := r.state.Pool429Before
 	r.mu.Unlock()
 	cfg.Providers = []string{"antigravity"}
-	var actual, planning []authFile
+	var actual, planning, unowned []authFile
 	for _, file := range files {
 		if providerOf(file) != "antigravity" || !managedAuthFile(file) {
 			continue
 		}
 		actual = append(actual, file)
-		if previous, exists := before[file.AuthIndex]; exists {
-			file.Disabled, file.Priority = previous.Disabled, previous.Priority
+		previous, exists := before[file.AuthIndex]
+		if !exists || (previous.Disabled && !cache[file.AuthIndex].ManagedRest) {
+			unowned = append(unowned, file)
+			continue // Never admit a late import or an external disable into worker planning.
 		}
+		file.Disabled, file.Priority = previous.Disabled, previous.Priority
 		planning = append(planning, file)
 	}
 	result, next := planPool(cfg, planning, cache, pools, time.Now().UTC())
+	for _, file := range unowned {
+		q := cache[file.AuthIndex]
+		q.ManagedRest = false
+		if q.Status == "" {
+			q.Status = quotaUnknown
+		}
+		cache[file.AuthIndex] = q
+		result.Credentials = append(result.Credentials, credentialState{
+			Provider: "antigravity", Account: maskAccount(firstText(file.Email, file.Account, file.Name)), AuthIndex: file.AuthIndex,
+			CurrentTier: tierFromPriority(file.Priority, file.Disabled), ProposedTier: tierPaused,
+			Disabled: file.Disabled, ProposedDisabled: true, Unavailable: file.Unavailable, Quota: q,
+			Reason: "外部停用或新到账号：需管理员单独显式启用",
+		})
+		if q.Status == quotaUnknown {
+			result.Unknown++
+		}
+	}
+	sortCredentials(result.Credentials)
 	byID := map[string]authFile{}
 	for _, file := range actual {
 		byID[file.AuthIndex] = file
