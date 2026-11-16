@@ -95,6 +95,9 @@ func (r *runtime) handleManagement(ctx context.Context, raw []byte) (managementR
 			r.mu.Lock()
 			current := normalizeSettings(r.state.Settings)
 			r.mu.Unlock()
+			if value, exists := fields["pool_lock_429_enabled"]; !exists || strings.TrimSpace(string(value)) == "null" {
+				next.PoolLock429Enabled = current.PoolLock429Enabled
+			}
 			if _, exists := fields["active_pool_size"]; !exists {
 				next.ActivePoolSize = current.ActivePoolSize
 			}

@@ -25,30 +25,32 @@ const (
 )
 
 type settings struct {
-	AutoApply         bool                `json:"auto_apply"`
-	Strategy          strategyName        `json:"strategy"`
-	ActivePoolSize    int                 `json:"active_pool_size"`
-	IntervalMinutes   int                 `json:"interval_minutes"`
-	Providers         []string            `json:"providers"`
-	AntigravityGroup  string              `json:"antigravity_group"`
-	FailureThreshold  int                 `json:"failure_threshold"`
-	RestDurationHours int                 `json:"rest_duration_hours"`
-	Geo400RestHours   int                 `json:"geo400_rest_hours"`
-	ManualTiers       map[string]tierName `json:"manual_tiers,omitempty"`
+	AutoApply          bool                `json:"auto_apply"`
+	PoolLock429Enabled bool                `json:"pool_lock_429_enabled"`
+	Strategy           strategyName        `json:"strategy"`
+	ActivePoolSize     int                 `json:"active_pool_size"`
+	IntervalMinutes    int                 `json:"interval_minutes"`
+	Providers          []string            `json:"providers"`
+	AntigravityGroup   string              `json:"antigravity_group"`
+	FailureThreshold   int                 `json:"failure_threshold"`
+	RestDurationHours  int                 `json:"rest_duration_hours"`
+	Geo400RestHours    int                 `json:"geo400_rest_hours"`
+	ManualTiers        map[string]tierName `json:"manual_tiers,omitempty"`
 }
 
 func defaultSettings() settings {
 	return settings{
-		AutoApply:         false,
-		Strategy:          strategyQuota,
-		ActivePoolSize:    4,
-		IntervalMinutes:   15,
-		Providers:         []string{"codex", "antigravity"},
-		AntigravityGroup:  "gemini",
-		FailureThreshold:  3,
-		RestDurationHours: 16,
-		Geo400RestHours:   2,
-		ManualTiers:       map[string]tierName{},
+		AutoApply:          false,
+		PoolLock429Enabled: true,
+		Strategy:           strategyQuota,
+		ActivePoolSize:     4,
+		IntervalMinutes:    15,
+		Providers:          []string{"codex", "antigravity"},
+		AntigravityGroup:   "gemini",
+		FailureThreshold:   3,
+		RestDurationHours:  16,
+		Geo400RestHours:    2,
+		ManualTiers:        map[string]tierName{},
 	}
 }
 
@@ -141,6 +143,13 @@ func parsePluginConfig(raw []byte) (settings, error) {
 	}
 	if value := values["auto_apply"]; value != "" {
 		cfg.AutoApply = parseBool(value)
+	}
+	if value := values["pool_lock_429_enabled"]; value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return settings{}, errors.New("pool_lock_429_enabled must be true or false")
+		}
+		cfg.PoolLock429Enabled = enabled
 	}
 	if value := values["strategy"]; value != "" {
 		cfg.Strategy = strategyName(value)

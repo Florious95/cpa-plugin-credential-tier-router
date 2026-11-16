@@ -40,6 +40,10 @@ func (r *runtime) tripPool429(ctx context.Context) error {
 	// Close selection immediately, without waiting for a slow probe or commit.
 	// Never hold mu while acquiring commitMu (the normal order is commitMu -> mu).
 	r.mu.Lock()
+	if !r.state.Settings.PoolLock429Enabled {
+		r.mu.Unlock()
+		return nil // Debug mode skips future trips; it never clears an existing latch.
+	}
 	r.pool429Pending = true
 	r.pool429Revision++
 	revision := r.pool429Revision

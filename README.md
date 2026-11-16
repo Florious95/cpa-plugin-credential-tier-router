@@ -13,7 +13,7 @@ The embedded Management Center page uses named policies instead of numeric score
 - `active_pool_size` (default 4) manages persistent Primary workers per provider. Incumbents keep their seats even at 1% quota or during transient probe failures; strategies rank only reserves filling actual vacancies. Zero disables pool management.
 - Tiers and the hard-disable circuit breaker are independent: managed rest uses priority `-1`, while a matching regional400 or failed Antigravity403 also immediately writes `disabled=true` to break CPA affinity. The following inspection restores `disabled=false` while keeping priority `-1` until rest expires.
 - The usage plugin passively matches Antigravity HTTP400 region failures and all failed HTTP403 responses, resting only the affected credential for two hours by default. The plugin has no network-switching responsibility and never launches external commands.
-- **Unreleased:** any failed Antigravity HTTP429 locks the entire AG pool indefinitely (`pool_locked_429=true`, every AG `disabled=true`/`priority=-1`). Only the explicit manual restore can unlock it; Codex credentials are not touched by the breaker/restore.
+- **Unreleased:** with `pool_lock_429_enabled` (default `true`), any failed Antigravity HTTP429 locks the entire AG pool indefinitely (`pool_locked_429=true`, every AG `disabled=true`/`priority=-1`). Only the explicit manual restore can unlock it; Codex credentials are not touched by the breaker/restore.
 - Credential updates preserve the complete auth document and change only managed scheduling fields.
 - Nested backup files are excluded from scheduling and writeback.
 - Credentials within the same tier remain available to CPA's normal round-robin selection.
@@ -43,6 +43,7 @@ plugins:
     credential-tier-router:
       enabled: true
       auto_apply: false
+      pool_lock_429_enabled: true # turn off temporarily for client/text-rule debugging
       strategy: quota_bands
       active_pool_size: 4 # per-provider admission target; zero disables pool management
       interval_minutes: 15
@@ -59,7 +60,9 @@ The first configuration card contains the original policies and base settings. T
 
 ### Antigravity429 manual pool lock (unreleased)
 
-Every failed Antigravity usage record with status429 triggers the lock, regardless of body, trigger account, configured provider selection, Auto Apply or worker target. Genuine quota429 also triggers it. The persistent flag has **no expiration**: fifteen-minute inspections, two-hour rests, quota200, Apply and plugin reload cannot unlock it. Automatic AG quota probes are skipped while locked; Codex retains its normal policy. Newly discovered AG credentials are paused and require separate enablement after release.
+With `pool_lock_429_enabled: true` (the default), every failed Antigravity usage record with status429 triggers the lock, regardless of body, trigger account, configured provider selection, Auto Apply or worker target. Genuine quota429 also triggers it. The persistent flag has **no expiration**: fifteen-minute inspections, two-hour rests, quota200, Apply and plugin reload cannot unlock it. Automatic AG quota probes are skipped while locked; Codex retains its normal policy. Newly discovered AG credentials are paused and require separate enablement after release.
+
+The **429 全池熔断保护** toggle saves immediately. Set `pool_lock_429_enabled: false` temporarily while debugging a new client's text rules: subsequent429 events skip the pool lock and do not change auth files. Switch it back on for production. Missing options in old configs/state default to true; explicit false survives restart. Turning protection off **does not unlock an existing latch**, nor change native429 stop/cooldown or ordinary400/403 behavior. Protection-only saves do not rebalance workers or reset the inspection timer.
 
 The dashboard shows a persistent warning and a confirmed manual-release action. The authenticated endpoint is:
 

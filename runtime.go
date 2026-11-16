@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -545,6 +546,9 @@ func (r *runtime) updateSettings(next settings) error {
 	r.commitMu.Lock()
 	r.mu.Lock()
 	previous := r.state.Settings
+	policy := next
+	policy.PoolLock429Enabled = previous.PoolLock429Enabled
+	protectionOnly := previous.PoolLock429Enabled != next.PoolLock429Enabled && reflect.DeepEqual(previous, policy)
 	r.state.Settings = next
 	err := r.store.save(r.state)
 	if err != nil {
@@ -556,6 +560,9 @@ func (r *runtime) updateSettings(next settings) error {
 	r.commitMu.Unlock()
 	if err != nil {
 		return err
+	}
+	if protectionOnly {
+		return nil // The usage gate changes immediately; do not rebalance or reset its worker timer.
 	}
 	if next.AutoApply && next.ActivePoolSize > 0 {
 		if err := r.reconcileActivePool(context.Background(), "设置工位调整"); err != nil {

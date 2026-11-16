@@ -20,6 +20,11 @@
           <input id="autoApply" type="checkbox" role="switch">
           <span class="switch" aria-hidden="true"></span>
         </label>
+        <label class="switch-field" title="自动保存；关闭只跳过后续429熔断，已锁定仍须人工恢复">
+          <span>429 全池熔断保护</span>
+          <input id="poolLock429Enabled" type="checkbox" role="switch" checked disabled>
+          <span class="switch" aria-hidden="true"></span>
+        </label>
         <button class="button secondary" id="refreshButton" type="button">刷新额度</button>
       </div>
     </header>
