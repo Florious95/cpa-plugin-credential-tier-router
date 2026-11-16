@@ -397,6 +397,48 @@ func TestPool429ImplementationPendingTripKeepsOriginalEligibility(t *testing.T) 
 	}
 }
 
+func TestPool429ReviewEmptySnapshotSurvivesRestart(t *testing.T) {
+	r, h := newPool429Fixture(t)
+	for id, file := range h.files {
+		if file.Provider == "antigravity" {
+			delete(h.files, id)
+			delete(h.docs, id)
+		}
+	}
+	pool429Send(t, r) // Successful inventory with zero AG accounts is still complete.
+	loaded, err := r.store.load()
+	if err != nil || loaded.Pool429Before == nil || len(loaded.Pool429Before) != 0 {
+		t.Fatal("completed empty snapshot became uninitialized after persistence")
+	}
+	// Also prove that genuinely uninitialized ownership remains distinct.
+	uninitialized := loaded
+	uninitialized.Pool429Before = nil
+	other := stateStore{path: filepath.Join(t.TempDir(), "nil-state.json")}
+	if err := other.save(uninitialized); err != nil {
+		t.Fatal(err)
+	}
+	withoutSnapshot, err := other.load()
+	if err != nil || withoutSnapshot.Pool429Before != nil {
+		t.Fatal("uninitialized snapshot must stay nil")
+	}
+	h.files["fixture-ag-00"] = authFile{Name: "fixture-ag-00.json", AuthIndex: "fixture-ag-00", Provider: "antigravity", Priority: 400}
+	h.docs["fixture-ag-00"] = json.RawMessage(`{"type":"antigravity","priority":400,"disabled":false}`)
+	boot := &runtime{host: h, state: loaded, store: r.store, geoNow: time.Now}
+	if err := boot.configure(defaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	defer boot.shutdown()
+	if !boot.state.Pool429Before["fixture-ag-00"].Disabled {
+		t.Fatal("reboot recaptured a new import as original eligible account")
+	}
+	if _, err := boot.restorePool429(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if file := h.files["fixture-ag-00"]; !file.Disabled || file.Priority != -1 {
+		t.Fatal("post-reboot new import was implicitly activated")
+	}
+}
+
 func TestPool429ReviewListFailureDoesNotCaptureBefore(t *testing.T) {
 	r, h := newPool429Fixture(t)
 	h.listFail = 1

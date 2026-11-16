@@ -117,7 +117,7 @@ type persistedState struct {
 	PoolLocked429     bool                       `json:"pool_locked_429"`
 	Pool429Since      *time.Time                 `json:"pool_429_since,omitempty"`
 	Pool429Generation uint64                     `json:"pool_429_generation,omitempty"`
-	Pool429Before     map[string]pool429Policy   `json:"pool_429_before,omitempty"`
+	Pool429Before     map[string]pool429Policy   `json:"pool_429_before"` // nil = not captured; {} = captured empty inventory.
 	ActivePool        map[string]activePoolState `json:"active_pool,omitempty"`
 	Settings          settings                   `json:"settings"`
 	Quota             map[string]quotaSnapshot   `json:"quota"`
