@@ -53,6 +53,10 @@ func TestRestoreScansPhysicalDirectoryBeforeWatcherSeesNewAG(t *testing.T) {
 		`{"provider":"antigravity","disabled":false}`,
 		`{"type":"antigravity","provider":"codex","disabled":false}`,
 		`{"type":"codex","provider":"antigravity","disabled":false}`,
+		`{"type":"antigravity","Disabled":true}`,
+		`{"type":"antigravity","disabled":false,"DISABLED":true}`,
+		`{"type":"antigravity","disabled":false,"TYPE":"codex"}`,
+		`{"provider":"antigravity","disabled":false,"PROVIDER":"codex"}`,
 	} {
 		write(late, body)
 		if err := verifyRestoreDisk(files, before, allowed); err == nil {

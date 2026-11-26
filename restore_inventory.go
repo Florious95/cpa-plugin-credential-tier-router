@@ -82,13 +82,16 @@ func verifyRestoreDisk(files []authFile, before map[string]pool429Policy, allowe
 				return fmt.Errorf("non-regular credential in auth directory; pool remains locked")
 			}
 			path := filepath.Join(dir, entry.Name())
-			raw, err := os.ReadFile(path)
-			var file *authFile
-			if err != nil || json.Unmarshal(raw, &file) != nil || file == nil {
+			data, err := os.ReadFile(path)
+			var raw map[string]any
+			if err != nil || json.Unmarshal(data, &raw) != nil || raw == nil {
 				return fmt.Errorf("unreadable physical credential; pool remains locked")
 			}
-			isAG := strings.EqualFold(strings.TrimSpace(file.Type), "antigravity") || strings.EqualFold(strings.TrimSpace(file.Provider), "antigravity")
-			if isAG && !file.Disabled && !allowedPaths[path] {
+			kind, _ := raw["type"].(string)
+			provider, _ := raw["provider"].(string)
+			disabled, _ := raw["disabled"].(bool)
+			isAG := strings.EqualFold(strings.TrimSpace(kind), "antigravity") || strings.EqualFold(strings.TrimSpace(provider), "antigravity")
+			if isAG && !disabled && !allowedPaths[path] {
 				return fmt.Errorf("enabled AG file was not restored; pool remains locked")
 			}
 			delete(requiredPaths, path)
