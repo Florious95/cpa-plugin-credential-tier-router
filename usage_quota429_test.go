@@ -96,6 +96,63 @@ func TestQuota429PhaseTwoPreservesManualDisableAcrossRestartAndExpiry(t *testing
 	}
 }
 
+func TestQuota429FailedHardDisableCannotUndoLaterManualDisable(t *testing.T) {
+	r, h := reviewRuntime(t, 1)
+	ctx := context.Background()
+	original := reviewAuth(t, h, "a")
+	if original.Disabled {
+		t.Fatal("fixture must start enabled")
+	}
+	r.host = &stickyFaultHost{reviewDiskHost: h, failSave: "a.json"}
+	if err := r.handleUsage(ctx, quota429Event(t, "a")); err == nil {
+		t.Fatal("expected a host write failure")
+	}
+	state, err := r.store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.state.Quota["a"].NeedsUnpause || state.Quota["a"].NeedsUnpause || reviewAuth(t, h, "a").Disabled {
+		t.Fatal("failed hard-disable granted permission or changed the credential")
+	}
+	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "priority": -1})
+	restarted := newRuntime(h)
+	if err := restarted.scheduledInspection(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	assertManagedProjection(t, h, "a", true, -1)
+}
+
+func TestQuota429BatchClearsEachSuccessfulUnpauseBeforeNextSave(t *testing.T) {
+	r, h := reviewRuntime(t, 2)
+	ctx := context.Background()
+	for _, id := range []string{"a", "b"} {
+		if err := r.handleUsage(ctx, quota429Event(t, id)); err != nil {
+			t.Fatal(err)
+		}
+		assertManagedProjection(t, h, id, true, -1)
+	}
+	r.host = &stickyFaultHost{reviewDiskHost: h, failSave: "b.json"}
+	if err := r.scheduledInspection(ctx, false); err == nil {
+		t.Fatal("expected b to fail")
+	}
+	state, err := r.store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Quota["a"].NeedsUnpause || !state.Quota["b"].NeedsUnpause {
+		t.Fatalf("wrong per-account phase after partial batch: a=%+v b=%+v", state.Quota["a"], state.Quota["b"])
+	}
+	assertManagedProjection(t, h, "a", false, -1)
+	assertManagedProjection(t, h, "b", true, -1)
+	stickySetAuth(t, h, "a", map[string]any{"disabled": true})
+	restarted := newRuntime(h)
+	if err := restarted.scheduledInspection(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	assertManagedProjection(t, h, "a", true, -1)
+	assertManagedProjection(t, h, "b", false, -1)
+}
+
 func TestLateQuota429OnPoolOwnedDisableSurvivesRestore(t *testing.T) {
 	r, h := newPool429Fixture(t)
 	ctx := context.Background()

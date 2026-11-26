@@ -85,7 +85,6 @@ func (r *runtime) markGeoRest(event usageEvent, now time.Time, duration time.Dur
 	}
 	quota.RestUntil = &until
 	quota.ManagedRest = true
-	quota.NeedsUnpause = true
 	quota.ObservedAt = now
 	r.state.Quota[index] = quota
 	return until
@@ -175,6 +174,16 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if pauseErr != nil {
 		r.recordHistory(trigger, 0, 1, "即时熔断失败："+safeError(pauseErr))
 	} else {
+		// A durable rest deadline is not permission to undo a manual disable.
+		// Grant that permission only after our hard-disable has succeeded.
+		r.mu.Lock()
+		q := r.state.Quota[index]
+		q.NeedsUnpause = true
+		r.state.Quota[index] = q
+		r.mu.Unlock()
+		if err := r.persistState(); persistErr == nil {
+			persistErr = err
+		}
 		r.markLatestGeoPaused(event, until)
 		r.recordHistory(trigger, 1, 0, fmt.Sprintf("已熔断并强制休眠至 %s；下次巡检解除禁用但保持暂停", until.Format(time.RFC3339)))
 	}
