@@ -475,11 +475,12 @@ func chooseTier(cfg settings, file authFile, current tierName, quota quotaSnapsh
 }
 
 func (r *runtime) applyPlan(ctx context.Context, files []authFile, result plan) error {
-	return r.applyPlanWithPoolLock(ctx, files, result, false)
+	return r.applyPlanWithPoolLock(ctx, files, result, nil)
 }
 
-// allowLocked is reserved for the explicit manual restore while the routing gate stays closed.
-func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, result plan, allowLocked bool) error {
+// A non-nil rollback map is reserved for an explicit restore while locked.
+// It records only managed-rest permissions consumed by successful host enables.
+func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, result plan, rollback map[string]struct{}) error {
 	byIndex := make(map[string]authFile, len(files))
 	for _, file := range files {
 		byIndex[file.AuthIndex] = file
@@ -492,7 +493,7 @@ func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, r
 	})
 	for _, credential := range ordered {
 		file := byIndex[credential.AuthIndex]
-		if !allowLocked && providerOf(file) == "antigravity" {
+		if rollback == nil && providerOf(file) == "antigravity" {
 			r.mu.Lock()
 			locked, pending := r.state.PoolLocked429, r.pool429Pending
 			r.mu.Unlock()
@@ -515,8 +516,19 @@ func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, r
 		if err := json.Unmarshal(document.JSON, &root); err != nil {
 			return err
 		}
-		if !credential.ProposedDisabled && !file.Disabled && root["disabled"] == true {
+		if root == nil {
+			return fmt.Errorf("credential %s document is not a JSON object", credential.AuthIndex)
+		}
+		currentDisabled, isBoolean := root["disabled"].(bool)
+		if root["disabled"] != nil && !isBoolean {
+			return fmt.Errorf("credential %s disabled field is not boolean", credential.AuthIndex)
+		}
+		if !credential.ProposedDisabled && !file.Disabled && currentDisabled {
 			return fmt.Errorf("credential %s was disabled after planning", credential.AuthIndex)
+		}
+		consume := !credential.ProposedDisabled && credential.Quota.NeedsUnpause
+		if consume && currentDisabled && !ownsRestDisable(root) {
+			return errors.Join(fmt.Errorf("credential %s no longer has a managed-rest pause marker", credential.AuthIndex), r.consumeUnpause(credential.AuthIndex))
 		}
 		root["priority"] = credential.ProposedTier.priority()
 		// Enablement and tier are independent. Only the usage-event transaction
@@ -529,7 +541,7 @@ func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, r
 		if err != nil {
 			return err
 		}
-		if !credential.ProposedDisabled && credential.Quota.NeedsUnpause {
+		if consume {
 			// Spend the permission durably first. A failed auth write must
 			// leave the credential disabled, never leave stale enable rights.
 			if err := r.consumeUnpause(credential.AuthIndex); err != nil {
@@ -538,6 +550,9 @@ func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, r
 		}
 		if err := r.host.saveAuth(ctx, firstText(document.Name, file.Name), updated); err != nil {
 			return err
+		}
+		if consume && rollback != nil {
+			rollback[credential.AuthIndex] = struct{}{}
 		}
 	}
 	return nil

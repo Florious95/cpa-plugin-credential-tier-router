@@ -36,7 +36,7 @@ func TestGeo400ManagedRestRecoveryAfterThreeHours(t *testing.T) {
 			authIndex: {
 				AuthIndex: authIndex,
 				Name:      filename,
-				JSON:      json.RawMessage(`{"email":"trentboultjfjf75@gmail.com","priority":-1,"disabled":true}`),
+				JSON:      json.RawMessage(`{"email":"trentboultjfjf75@gmail.com","priority":-1,"disabled":true,"credential_tier_router":{"managed":true,"tier":"paused","reason":"geo_400"}}`),
 			},
 		},
 	}

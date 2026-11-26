@@ -115,7 +115,7 @@ func TestManagedRestRecoveryIsScopedEvenWithAutomationOff(t *testing.T) {
 	r, h := reviewRuntime(t, 6)
 	r.state.Settings.AutoApply = false
 	// No bootstrap has occurred. Only a is owned; b is externally disabled.
-	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "priority": -1})
+	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "priority": -1, "credential_tier_router": map[string]any{"managed": true, "tier": "paused", "reason": "geo_400"}})
 	stickySetAuth(t, h, "b", map[string]any{"disabled": true, "priority": -1})
 	until := time.Now().Add(time.Hour)
 	r.state.Quota["a"] = quotaSnapshot{RestUntil: &until, ManagedRest: true, NeedsUnpause: true, Status: quotaUnknown}

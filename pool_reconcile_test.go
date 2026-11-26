@@ -48,7 +48,7 @@ func TestReconcileActivePoolRestoresExpiredManagedPause(t *testing.T) {
 	host := &fakeHost{
 		files: []authFile{{AuthIndex: "a", Name: "account.json", Provider: "antigravity", Priority: -1, Disabled: true}},
 		documents: map[string]authDocument{
-			"a": {AuthIndex: "a", Name: "account.json", JSON: json.RawMessage(`{"priority":-1,"disabled":true}`)},
+			"a": {AuthIndex: "a", Name: "account.json", JSON: json.RawMessage(`{"priority":-1,"disabled":true,"credential_tier_router":{"managed":true,"tier":"paused","reason":"geo_400"}}`)},
 		},
 	}
 	r := newRuntime(host)

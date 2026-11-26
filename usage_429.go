@@ -77,6 +77,12 @@ func (r *runtime) tripPool429(ctx context.Context) error {
 // Caller holds commitMu. This is durable intent plus per-file projection, not a
 // filesystem batch transaction. Keep disabling other accounts after any error.
 func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, error) {
+	return r.projectPoolLock(ctx, nil)
+}
+
+// A failed restore may re-grant a consumed permission only after successfully
+// putting that exact credential back under plugin-owned hard-disable.
+func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[string]struct{}) (int, error) {
 	files, listErr := r.host.listAuth(ctx)
 	if listErr != nil {
 		return 0, listErr // No inventory means no original-policy snapshot yet.
@@ -115,6 +121,7 @@ func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, erro
 			continue
 		}
 		document, err := r.host.getAuth(ctx, file.AuthIndex)
+		regrant := false
 		if err == nil {
 			var root map[string]any
 			if err = json.Unmarshal(document.JSON, &root); err == nil && root == nil {
@@ -123,6 +130,11 @@ func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, erro
 			if err == nil {
 				// CPA may clear runtime cooldowns on hard-disable; this host API
 				// exposes no cooldown-preserving policy patch or batch transaction.
+				_, rolledBack := restoreRollback[file.AuthIndex]
+				regrant = rolledBack && root["disabled"] == false
+				if regrant {
+					root["credential_tier_router"] = map[string]any{"managed": true, "tier": tierPaused, "reason": "pool_restore_rollback", "updated_at": time.Now().UTC().Format(time.RFC3339)}
+				}
 				root["disabled"], root["priority"] = true, -1
 				var updated []byte
 				if updated, err = json.Marshal(root); err == nil {
@@ -135,8 +147,28 @@ func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, erro
 			continue
 		}
 		changed++
+		if regrant {
+			failures = append(failures, r.regrantRestUnpause(file.AuthIndex))
+		}
 	}
 	return changed, errors.Join(failures...)
+}
+
+func (r *runtime) regrantRestUnpause(index string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	q := r.state.Quota[index]
+	if !q.ManagedRest || q.RestUntil == nil || q.NeedsUnpause {
+		return nil
+	}
+	q.NeedsUnpause = true
+	r.state.Quota[index] = q
+	if err := r.store.save(r.state); err != nil {
+		q.NeedsUnpause = false
+		r.state.Quota[index] = q
+		return fmt.Errorf("persist rollback rest permission for %s: %w", index, err)
+	}
+	return nil
 }
 
 func (r *runtime) enforcePoolLock429(ctx context.Context) error {
@@ -225,15 +257,16 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 			result.Changes++
 		}
 	}
-	if err = r.applyPlanWithPoolLock(ctx, actual, result, true); err != nil {
-		_, pauseErr := r.pauseAllAntigravityCredentials(ctx)
+	rollback := map[string]struct{}{}
+	if err = r.applyPlanWithPoolLock(ctx, actual, result, rollback); err != nil {
+		_, pauseErr := r.projectPoolLock(ctx, rollback)
 		return plan{}, errors.Join(err, pauseErr)
 	}
 	finishManagedRestProjection(cache, result)
 	r.mu.Lock()
 	if revision != r.pool429Revision || r.pool429Pending {
 		r.mu.Unlock()
-		_, pauseErr := r.pauseAllAntigravityCredentials(ctx)
+		_, pauseErr := r.projectPoolLock(ctx, rollback)
 		return plan{}, errors.Join(errPool429Changed, pauseErr)
 	}
 	oldQuota, oldPools, oldSince, oldHistory := r.state.Quota, r.state.ActivePool, r.state.Pool429Since, r.state.History
@@ -252,7 +285,7 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	}
 	r.mu.Unlock()
 	if err != nil {
-		_, pauseErr := r.pauseAllAntigravityCredentials(ctx)
+		_, pauseErr := r.projectPoolLock(ctx, rollback)
 		return plan{}, errors.Join(err, pauseErr)
 	}
 	return result, nil

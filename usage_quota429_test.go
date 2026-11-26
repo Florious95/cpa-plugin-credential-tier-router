@@ -218,6 +218,61 @@ func TestLateQuota429OnPoolOwnedDisableSurvivesRestore(t *testing.T) {
 	}
 }
 
+func TestQuota429DoesNotEnableReplacementWithoutOwnershipMarker(t *testing.T) {
+	r, h := reviewRuntime(t, 1)
+	ctx := context.Background()
+	if err := r.handleUsage(ctx, quota429Event(t, "a")); err != nil {
+		t.Fatal(err)
+	}
+	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "credential_tier_router": nil})
+	if err := r.scheduledInspection(ctx, false); err == nil {
+		t.Fatal("missing ownership marker must reject the projection")
+	}
+	assertManagedProjection(t, h, "a", true, -1)
+	state, err := r.store.load()
+	if err != nil || state.Quota["a"].NeedsUnpause {
+		t.Fatalf("stale permission not revoked: %+v / %v", state.Quota["a"], err)
+	}
+	if err := newRuntime(h).scheduledInspection(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	assertManagedProjection(t, h, "a", true, -1)
+}
+
+func TestRestoreRegrantsRestOnlyAfterRollingBackSuccessfulUnpause(t *testing.T) {
+	r, h := newPool429Fixture(t)
+	ctx := context.Background()
+	const a, b = "fixture-ag-00", "fixture-ag-01"
+	pool429Send(t, r)
+	for _, id := range []string{a, b} {
+		if err := r.handleUsage(ctx, quota429Event(t, id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.fail[b+".json"] = true
+	if _, err := r.restorePool429(ctx); err == nil {
+		t.Fatal("expected partial restore failure")
+	}
+	state, err := r.store.load()
+	if err != nil || !state.PoolLocked429 || !state.Quota[a].NeedsUnpause || state.Quota[b].NeedsUnpause {
+		t.Fatalf("rollback did not restore precisely the successful enable: a=%+v b=%+v err=%v", state.Quota[a], state.Quota[b], err)
+	}
+	if !h.files[a].Disabled || !h.files[b].Disabled {
+		t.Fatal("rollback did not leave credentials disabled")
+	}
+	var rollbackDoc map[string]any
+	if err := json.Unmarshal(h.docs[a], &rollbackDoc); err != nil || !ownsRestDisable(rollbackDoc) {
+		t.Fatal("successfully rolled-back credential lost its pause ownership marker")
+	}
+	delete(h.fail, b+".json")
+	if _, err := r.restorePool429(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r.poolLocked429() || h.files[a].Disabled || h.files[a].Priority != -1 || r.state.Quota[a].NeedsUnpause {
+		t.Fatal("retry did not release the rolled-back credential into phase two")
+	}
+}
+
 func TestLateQuota429DoesNotAdoptExternallyDisabled(t *testing.T) {
 	r, h := newHTTP403HubRuntime(t)
 	r.state.PoolLocked429 = true

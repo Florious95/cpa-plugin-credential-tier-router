@@ -43,11 +43,7 @@ func (r *runtime) prepareRestProjection(ctx context.Context, index string, statu
 			return "", nil, fmt.Errorf("credential %s disabled field is not boolean", index)
 		}
 		if disabled {
-			marker, _ := root["credential_tier_router"].(map[string]any)
-			why, _ := marker["reason"].(string)
-			restOwnsDisable := needsUnpause && marker["managed"] == true && marker["tier"] == string(tierPaused) &&
-				(why == "geo_400" || why == "http_403" || why == "quota_exhausted")
-			if !poolOwnsDisable && !restOwnsDisable {
+			if !poolOwnsDisable && !(needsUnpause && ownsRestDisable(root)) {
 				return "", nil, nil
 			}
 		}
@@ -67,6 +63,13 @@ func (r *runtime) prepareRestProjection(ctx context.Context, index string, statu
 	}
 	updated, err := json.Marshal(root)
 	return name, updated, err
+}
+
+func ownsRestDisable(root map[string]any) bool {
+	marker, _ := root["credential_tier_router"].(map[string]any)
+	why, _ := marker["reason"].(string)
+	return marker["managed"] == true && marker["tier"] == string(tierPaused) &&
+		(why == "geo_400" || why == "http_403" || why == "quota_exhausted" || why == "pool_restore_rollback")
 }
 
 func (r *runtime) markGeoRest(event usageEvent, now time.Time, duration time.Duration) time.Time {
