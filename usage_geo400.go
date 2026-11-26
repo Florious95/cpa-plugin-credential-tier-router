@@ -32,8 +32,11 @@ func (r *runtime) pauseGeoCredential(ctx context.Context, event usageEvent) erro
 	root["priority"] = -1
 	root["disabled"] = true
 	reason := "geo_400"
-	if event.Failure.StatusCode == 403 {
+	switch event.Failure.StatusCode {
+	case 403:
 		reason = "http_403"
+	case 429:
+		reason = "quota_exhausted"
 	}
 	root["credential_tier_router"] = map[string]any{
 		"managed": true, "tier": string(tierPaused), "reason": reason,
@@ -92,21 +95,61 @@ func (r *runtime) markLatestGeoPaused(event usageEvent, until time.Time) {
 	}
 }
 
+// Only structured Google ErrorInfo qualifies. Treat malformed and unknown 429s
+// conservatively; a mention in a message or RetryInfo is not sufficient.
+func isGoogleQuotaExhausted(body string) bool {
+	type detail struct {
+		Type   string `json:"@type"`
+		Reason string `json:"reason"`
+	}
+	var payload struct {
+		Details []detail `json:"details"`
+		Error   *struct {
+			Details []detail `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return false
+	}
+	details := payload.Details
+	if payload.Error != nil {
+		details = payload.Error.Details
+	}
+	found := false
+	for _, d := range details {
+		if d.Type != "type.googleapis.com/google.rpc.ErrorInfo" {
+			continue
+		}
+		if d.Reason != "QUOTA_EXHAUSTED" {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
 func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	var event usageEvent
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return fmt.Errorf("decode usage event: %w", err)
 	}
-	if event.Failed && event.Failure.StatusCode == 429 && strings.EqualFold(strings.TrimSpace(event.Provider), "antigravity") {
-		return r.tripPool429(ctx)
-	}
-	forbidden := event.Failed && event.Failure.StatusCode == 403 && strings.EqualFold(strings.TrimSpace(event.Provider), "antigravity")
-	if !isAntigravityGeo400(event) && !forbidden {
+	if !event.Failed || !strings.EqualFold(strings.TrimSpace(event.Provider), "antigravity") {
 		return nil
 	}
 	trigger := "地区400"
-	if forbidden {
+	var restDuration time.Duration
+	switch event.Failure.StatusCode {
+	case 429:
+		if !isGoogleQuotaExhausted(event.Failure.Body) {
+			return r.tripPool429(ctx)
+		}
+		trigger, restDuration = "额度429", 16*time.Hour
+	case 403:
 		trigger = "HTTP403"
+	default:
+		if !isAntigravityGeo400(event) {
+			return nil
+		}
 	}
 	index := firstText(event.AuthIndex, event.AuthID)
 	if index == "" {
@@ -122,7 +165,10 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	r.mu.Lock()
 	cfg := normalizeSettings(r.state.Settings)
 	r.mu.Unlock()
-	until := r.markGeoRest(event, now, time.Duration(cfg.Geo400RestHours)*time.Hour)
+	if restDuration == 0 {
+		restDuration = time.Duration(cfg.Geo400RestHours) * time.Hour
+	}
+	until := r.markGeoRest(event, now, restDuration)
 	persistErr := r.persistState()
 	// Attempt the safety disable even if state storage fails, but never admit
 	// a replacement without durable recovery intent.
