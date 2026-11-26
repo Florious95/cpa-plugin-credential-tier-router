@@ -93,7 +93,7 @@ func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, erro
 				if initial {
 					previous = pool429Policy{Disabled: file.Disabled, Priority: file.Priority}
 				} else if q, exists := r.state.Quota[file.AuthIndex]; exists {
-					q.ManagedRest = false // A new import cannot inherit old auto-enable ownership.
+					q.ManagedRest, q.NeedsUnpause = false, false // A new import cannot inherit old auto-enable ownership.
 					r.state.Quota[file.AuthIndex] = q
 				}
 				r.state.Pool429Before[file.AuthIndex] = previous // New arrivals need separate operator enablement.
@@ -186,7 +186,7 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 		}
 		actual = append(actual, file)
 		previous, exists := before[file.AuthIndex]
-		if !exists || (previous.Disabled && !cache[file.AuthIndex].ManagedRest) {
+		if !exists || (previous.Disabled && !(cache[file.AuthIndex].ManagedRest && cache[file.AuthIndex].NeedsUnpause)) {
 			unowned = append(unowned, file)
 			continue // Never admit a late import or an external disable into worker planning.
 		}
@@ -196,7 +196,7 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	result, next := planPool(cfg, planning, cache, pools, time.Now().UTC())
 	for _, file := range unowned {
 		q := cache[file.AuthIndex]
-		q.ManagedRest = false
+		q.ManagedRest, q.NeedsUnpause = false, false
 		if q.Status == "" {
 			q.Status = quotaUnknown
 		}
@@ -229,13 +229,7 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 		_, pauseErr := r.pauseAllAntigravityCredentials(ctx)
 		return plan{}, errors.Join(err, pauseErr)
 	}
-	for _, c := range result.Credentials {
-		q := cache[c.AuthIndex]
-		if !c.Unavailable && c.ProposedTier != tierPaused && q.ManagedRest && q.RestUntil != nil && !q.RestUntil.After(result.GeneratedAt) {
-			q.RestUntil, q.ManagedRest = nil, false
-			cache[c.AuthIndex] = q
-		}
-	}
+	finishManagedRestProjection(cache, result)
 	r.mu.Lock()
 	if revision != r.pool429Revision || r.pool429Pending {
 		r.mu.Unlock()

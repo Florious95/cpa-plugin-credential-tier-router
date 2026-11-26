@@ -56,7 +56,7 @@ func TestReconcileActivePoolRestoresExpiredManagedPause(t *testing.T) {
 	r.state.Settings = defaultSettings()
 	r.state.Settings.ActivePoolSize = 1
 	r.state.Quota = map[string]quotaSnapshot{
-		"a": {Remaining: ptrInt(80), RestUntil: ptrTime(time.Now().UTC().Add(-time.Minute)), ManagedRest: true, Status: quotaReady, ObservedAt: now.Add(-time.Hour)},
+		"a": {Remaining: ptrInt(80), RestUntil: ptrTime(time.Now().UTC().Add(-time.Minute)), ManagedRest: true, NeedsUnpause: true, Status: quotaReady, ObservedAt: now.Add(-time.Hour)},
 	}
 	// reconcile uses wall clock; an expired deadline remains expired regardless of
 	// the exact current time in this test.

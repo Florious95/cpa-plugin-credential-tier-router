@@ -18,7 +18,7 @@ func isAntigravityGeo400(event usageEvent) bool {
 
 // prepareRestProjection runs under commitMu and must succeed before a
 // ManagedRest lease is written. A nil payload means an external disable.
-func (r *runtime) prepareRestProjection(ctx context.Context, index string, status int, alreadyManaged bool) (string, []byte, error) {
+func (r *runtime) prepareRestProjection(ctx context.Context, index string, status int, needsUnpause, poolOwnsDisable bool) (string, []byte, error) {
 	document, err := r.host.getAuth(ctx, index)
 	if err != nil {
 		return "", nil, fmt.Errorf("get credential %s for rest: %w", index, err)
@@ -45,8 +45,9 @@ func (r *runtime) prepareRestProjection(ctx context.Context, index string, statu
 		if disabled {
 			marker, _ := root["credential_tier_router"].(map[string]any)
 			why, _ := marker["reason"].(string)
-			if !alreadyManaged || marker["managed"] != true || marker["tier"] != string(tierPaused) ||
-				(why != "geo_400" && why != "http_403" && why != "quota_exhausted") {
+			restOwnsDisable := needsUnpause && marker["managed"] == true && marker["tier"] == string(tierPaused) &&
+				(why == "geo_400" || why == "http_403" || why == "quota_exhausted")
+			if !poolOwnsDisable && !restOwnsDisable {
 				return "", nil, nil
 			}
 		}
@@ -84,6 +85,7 @@ func (r *runtime) markGeoRest(event usageEvent, now time.Time, duration time.Dur
 	}
 	quota.RestUntil = &until
 	quota.ManagedRest = true
+	quota.NeedsUnpause = true
 	quota.ObservedAt = now
 	r.state.Quota[index] = quota
 	return until
@@ -150,13 +152,15 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	// A late event must not grant auto-enable ownership to a credential that
 	// was externally disabled or absent from the full-pool lock snapshot.
 	previous, known := r.state.Pool429Before[index]
-	alreadyManaged := r.state.Quota[index].ManagedRest
-	external := r.state.PoolLocked429 && (!known || (previous.Disabled && !alreadyManaged))
+	q := r.state.Quota[index]
+	needsUnpause := q.ManagedRest && q.NeedsUnpause && q.RestUntil != nil
+	poolOwnsDisable := r.state.PoolLocked429 && known && !previous.Disabled
+	external := r.state.PoolLocked429 && (!known || (previous.Disabled && !needsUnpause))
 	r.mu.Unlock()
 	if external {
 		return nil
 	}
-	name, projection, err := r.prepareRestProjection(ctx, index, event.Failure.StatusCode, alreadyManaged)
+	name, projection, err := r.prepareRestProjection(ctx, index, event.Failure.StatusCode, needsUnpause, poolOwnsDisable)
 	if err != nil || projection == nil {
 		return err
 	}

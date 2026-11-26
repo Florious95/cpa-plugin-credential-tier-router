@@ -416,12 +416,13 @@ func failedQuota(previous quotaSnapshot, probeErr error, threshold int, now time
 		status = quotaUnknown
 	}
 	return quotaSnapshot{
-		ObservedAt:  now,
-		Status:      status,
-		FailCount:   failCount,
-		LastError:   message,
-		RestUntil:   previous.RestUntil,
-		ManagedRest: previous.ManagedRest,
+		ObservedAt:   now,
+		Status:       status,
+		FailCount:    failCount,
+		LastError:    message,
+		RestUntil:    previous.RestUntil,
+		ManagedRest:  previous.ManagedRest,
+		NeedsUnpause: previous.NeedsUnpause,
 	}
 }
 

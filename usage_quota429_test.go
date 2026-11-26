@@ -9,9 +9,13 @@ import (
 
 const fixtureQuota429 = `{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"9792s"}]}}`
 
-func quota429Event(t *testing.T) []byte {
+func quota429Event(t *testing.T, indexes ...string) []byte {
 	t.Helper()
-	event, err := json.Marshal(usageEvent{Provider: "antigravity", AuthIndex: "fixture", Failed: true, Failure: usageFailure{StatusCode: 429, Body: fixtureQuota429}})
+	index := "fixture"
+	if len(indexes) > 0 {
+		index = indexes[0]
+	}
+	event, err := json.Marshal(usageEvent{Provider: "antigravity", AuthIndex: index, Failed: true, Failure: usageFailure{StatusCode: 429, Body: fixtureQuota429}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +45,81 @@ func TestQuota429ManagedRest(t *testing.T) {
 	}
 	if h.file.Disabled || h.file.Priority != -1 || len(h.requests) != 0 {
 		t.Fatal("next inspection should retain -1 while releasing hard disable without quota probes")
+	}
+}
+
+func TestQuota429PhaseTwoPreservesManualDisableAcrossRestartAndExpiry(t *testing.T) {
+	r, h := newHTTP403HubRuntime(t)
+	ctx := context.Background()
+	if err := r.handleUsage(ctx, quota429Event(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !r.state.Quota["fixture"].NeedsUnpause {
+		t.Fatal("phase one did not persist a pending unpause")
+	}
+	if err := r.scheduledInspection(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	state, err := r.store.load()
+	q := state.Quota["fixture"]
+	if err != nil || h.file.Disabled || h.file.Priority != -1 || !q.ManagedRest || q.NeedsUnpause {
+		t.Fatalf("phase two did not consume enable permission: %+v / %v", q, err)
+	}
+	var auth map[string]any
+	if err := json.Unmarshal(h.document, &auth); err != nil {
+		t.Fatal(err)
+	}
+	auth["disabled"] = true
+	manual, err := json.Marshal(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.saveAuth(ctx, h.file.Name, manual); err != nil {
+		t.Fatal(err)
+	}
+	r.state = state // Reload the durable phase, not a transient process flag.
+	if err := r.handleUsage(ctx, quota429Event(t)); err != nil {
+		t.Fatal(err)
+	}
+	for _, expired := range []bool{false, true} {
+		if expired {
+			past := time.Now().Add(-time.Minute)
+			q.RestUntil = &past
+			r.state.Quota["fixture"] = q
+		}
+		if err := r.scheduledInspection(ctx, false); err != nil {
+			t.Fatal(err)
+		}
+		if !h.file.Disabled || string(h.document) != string(manual) || r.state.Quota["fixture"].NeedsUnpause {
+			t.Fatal("external disable was reversed or its one-shot permission rearmed")
+		}
+	}
+}
+
+func TestLateQuota429OnPoolOwnedDisableSurvivesRestore(t *testing.T) {
+	r, h := newPool429Fixture(t)
+	ctx := context.Background()
+	const id = "fixture-ag-00"
+	pool429Send(t, r)
+	if !r.poolLocked429() || r.state.Pool429Before[id].Disabled || !h.files[id].Disabled {
+		t.Fatal("fixture must be enabled before the lock and disabled by its projection")
+	}
+	now := time.Now().UTC()
+	r.geoNow = func() time.Time { return now }
+	gen := r.state.Pool429Generation
+	if err := r.handleUsage(ctx, quota429Event(t, id)); err != nil {
+		t.Fatal(err)
+	}
+	q := r.state.Quota[id]
+	if !r.poolLocked429() || r.state.Pool429Generation != gen || !q.NeedsUnpause || q.RestUntil == nil || !q.RestUntil.Equal(now.Add(16*time.Hour)) {
+		t.Fatalf("late quota event failed to persist rest while preserving the existing lock: %+v", q)
+	}
+	if _, err := r.restorePool429(ctx); err != nil {
+		t.Fatal(err)
+	}
+	q = r.state.Quota[id]
+	if r.poolLocked429() || h.files[id].Disabled || h.files[id].Priority != -1 || !q.ManagedRest || q.NeedsUnpause {
+		t.Fatalf("restore failed to project phase two: %+v, file=%+v", q, h.files[id])
 	}
 }
 

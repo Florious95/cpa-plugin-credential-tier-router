@@ -187,9 +187,9 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 		restExpired := managedRest && !quota.RestUntil.After(now)
 		// disabled breaks CPA session affinity once; a managed rest is thereafter
 		// enforced by priority alone. Never enable an externally disabled file.
-		effectiveDisabled := file.Disabled && !managedRest
+		effectiveDisabled := file.Disabled && !(managedRest && quota.NeedsUnpause)
 		current := tierFromPriority(file.Priority, effectiveDisabled)
-		if restExpired && current == tierPaused {
+		if restExpired && !effectiveDisabled && current == tierPaused {
 			current = tierRegular
 		}
 		if restExpired && quota.Remaining != nil && *quota.Remaining <= 0 && !quota.ObservedAt.After(*previousRest) {
@@ -211,11 +211,12 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 				reason = fmt.Sprintf("手动暂停，休眠至 %s", quota.RestUntil.UTC().Format(time.RFC3339))
 			}
 		}
-		if restExpired && proposed != tierPaused {
+		if restExpired && !effectiveDisabled && proposed != tierPaused {
 			// Keep ownership durable until the enabling write has succeeded.
 			// Otherwise a crash between intent and projection strands this file
 			// as an apparently external disable on restart.
 			quota.RestUntil, quota.ManagedRest = previousRest, true
+			quota.NeedsUnpause = cache[file.AuthIndex].NeedsUnpause
 		}
 		cache[file.AuthIndex] = quota
 		credentials = append(credentials, credentialState{
@@ -249,6 +250,22 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 	}
 	sortCredentials(result.Credentials)
 	return result, next
+}
+
+// Consume the one-shot enable permission only after the projection succeeds.
+func finishManagedRestProjection(cache map[string]quotaSnapshot, result plan) {
+	for i := range result.Credentials {
+		c := &result.Credentials[i]
+		q := cache[c.AuthIndex]
+		if c.ProposedDisabled || (c.Disabled && !c.Changed) || !q.ManagedRest || q.RestUntil == nil {
+			continue
+		}
+		q.NeedsUnpause = false
+		if !c.Unavailable && c.ProposedTier != tierPaused && !q.RestUntil.After(result.GeneratedAt) {
+			q.RestUntil, q.ManagedRest = nil, false
+		}
+		cache[c.AuthIndex], c.Quota = q, q
+	}
 }
 
 // reconcileActivePool is immediate, cache-only reconciliation; it never waits
@@ -304,7 +321,7 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 		// A geo rest committed while probing is newer than this observation.
 		// Keep even an expired deadline until planPool resolves its ownership.
 		if previous := cache[id]; previous.RestUntil != nil {
-			observation.RestUntil, observation.ManagedRest = previous.RestUntil, previous.ManagedRest
+			observation.RestUntil, observation.ManagedRest, observation.NeedsUnpause = previous.RestUntil, previous.ManagedRest, previous.NeedsUnpause
 		}
 		cache[id] = observation
 	}
@@ -336,7 +353,7 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 		result.Changes = 0
 		for i := range result.Credentials {
 			c := &result.Credentials[i]
-			if managedOnly && cfg.ActivePoolSize > 0 && c.ProposedTier != tierPaused {
+			if managedOnly && cfg.ActivePoolSize > 0 && !c.ProposedDisabled && c.ProposedTier != tierPaused {
 				c.ProposedTier = tierBackup
 				if slices.Contains(pools[c.Provider].Members, c.AuthIndex) {
 					c.ProposedTier = tierPrimary
@@ -380,14 +397,8 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 			return plan{}, err
 		}
 		r.mu.Lock()
-		for i := range result.Credentials {
-			c := &result.Credentials[i]
-			q := r.state.Quota[c.AuthIndex]
-			if !c.Unavailable && c.ProposedTier != tierPaused && q.ManagedRest && q.RestUntil != nil && !q.RestUntil.After(result.GeneratedAt) {
-				q.RestUntil, q.ManagedRest = nil, false
-				r.state.Quota[c.AuthIndex] = q
-				c.Quota = q
-			}
+		if !r.state.PoolLocked429 && !r.pool429Pending {
+			finishManagedRestProjection(r.state.Quota, result)
 		}
 		r.mu.Unlock()
 		r.recordHistory(trigger, result.Changes, result.Unknown, historySummary(result))

@@ -82,7 +82,7 @@ func TestManagedRestExactExpiryAndStaleZeroCannotRearm(t *testing.T) {
 		for _, offset := range []time.Duration{-time.Nanosecond, 0, time.Nanosecond} {
 			for _, remaining := range []*int{nil, ptrInt(0), ptrInt(75)} {
 				cfg := defaultSettings()
-				cache := map[string]quotaSnapshot{"a": {Status: quotaReady, Remaining: remaining, RestUntil: &deadline, ManagedRest: true, ObservedAt: deadline.Add(-time.Hour)}}
+				cache := map[string]quotaSnapshot{"a": {Status: quotaReady, Remaining: remaining, RestUntil: &deadline, ManagedRest: true, NeedsUnpause: disabled, ObservedAt: deadline.Add(-time.Hour)}}
 				result, _ := planPool(cfg, []authFile{{AuthIndex: "a", Provider: "antigravity", Name: "a.json", Priority: -1, Disabled: disabled}}, cache, map[string]activePoolState{"antigravity": {}}, deadline.Add(offset))
 				c := result.Credentials[0]
 				if c.ProposedDisabled {
@@ -118,7 +118,7 @@ func TestManagedRestRecoveryIsScopedEvenWithAutomationOff(t *testing.T) {
 	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "priority": -1})
 	stickySetAuth(t, h, "b", map[string]any{"disabled": true, "priority": -1})
 	until := time.Now().Add(time.Hour)
-	r.state.Quota["a"] = quotaSnapshot{RestUntil: &until, ManagedRest: true, Status: quotaUnknown}
+	r.state.Quota["a"] = quotaSnapshot{RestUntil: &until, ManagedRest: true, NeedsUnpause: true, Status: quotaUnknown}
 	r.state.Quota["b"] = quotaSnapshot{RestUntil: &until, ManagedRest: false, Status: quotaUnknown}
 	// Recovery ownership is serviced even after the provider is deselected.
 	r.state.Settings.Providers = []string{"codex"}

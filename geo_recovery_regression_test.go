@@ -46,10 +46,11 @@ func TestGeo400ManagedRestRecoveryAfterThreeHours(t *testing.T) {
 	r.state.Settings.ActivePoolSize = 1
 	r.state.Quota = map[string]quotaSnapshot{
 		authIndex: {
-			Status:      quotaUnknown,
-			RestUntil:   &restUntil,
-			ManagedRest: true,
-			ObservedAt:  startedAt,
+			Status:       quotaUnknown,
+			RestUntil:    &restUntil,
+			ManagedRest:  true,
+			NeedsUnpause: true,
+			ObservedAt:   startedAt,
 		},
 	}
 
