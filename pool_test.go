@@ -83,7 +83,7 @@ func TestApplyActivePoolCapPreservesPausedAndUnavailable(t *testing.T) {
 	}
 }
 
-func TestApplyPlanHardDisablesPausedAndRestoresOnPromotion(t *testing.T) {
+func TestApplyPlanDoesNotRestoreUnmarkedHardDisableOnPromotion(t *testing.T) {
 	host := &fakeHost{documents: map[string]authDocument{
 		"a": {AuthIndex: "a", Name: "account.json", JSON: json.RawMessage(`{"priority":400,"disabled":false}`)},
 	}}
@@ -100,13 +100,13 @@ func TestApplyPlanHardDisablesPausedAndRestoresOnPromotion(t *testing.T) {
 		t.Fatalf("paused state=%v, want disabled=true priority=-1", saved)
 	}
 	host.documents["a"] = authDocument{AuthIndex: "a", Name: "account.json", JSON: host.saved["account.json"]}
-	if err := r.applyPlan(context.Background(), []authFile{{AuthIndex: "a", Name: "account.json", Disabled: true}}, plan{Credentials: []credentialState{{AuthIndex: "a", ProposedTier: tierPrimary, Changed: true}}}); err != nil {
-		t.Fatal(err)
+	if err := r.applyPlan(context.Background(), []authFile{{AuthIndex: "a", Name: "account.json", Disabled: true}}, plan{Credentials: []credentialState{{AuthIndex: "a", ProposedTier: tierPrimary, Changed: true}}}); err == nil {
+		t.Fatal("promoting an unmarked disabled credential must fail")
 	}
 	if err := json.Unmarshal(host.saved["account.json"], &saved); err != nil {
 		t.Fatal(err)
 	}
-	if saved["disabled"] != false || int(saved["priority"].(float64)) != 400 {
-		t.Fatalf("restored state=%v, want disabled=false priority=400", saved)
+	if saved["disabled"] != true || int(saved["priority"].(float64)) != -1 {
+		t.Fatalf("rejected projection modified the credential: %v", saved)
 	}
 }

@@ -526,14 +526,21 @@ func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, r
 		if !credential.ProposedDisabled && !file.Disabled && currentDisabled {
 			return fmt.Errorf("credential %s was disabled after planning", credential.AuthIndex)
 		}
-		consume := !credential.ProposedDisabled && credential.Quota.NeedsUnpause
-		if consume && currentDisabled && !ownsRestDisable(root) {
-			return errors.Join(fmt.Errorf("credential %s no longer has a managed-rest pause marker", credential.AuthIndex), r.consumeUnpause(credential.AuthIndex))
+		consume := !credential.ProposedDisabled && (credential.Quota.NeedsUnpause || file.RestPauseMarker != "")
+		if !credential.ProposedDisabled && currentDisabled && (rollback == nil || consume) && !ownsRestDisable(root, file.RestPauseMarker) {
+			err := fmt.Errorf("credential %s no longer has its managed-rest pause marker", credential.AuthIndex)
+			if rollback == nil {
+				return errors.Join(err, r.consumeUnpause(credential.AuthIndex))
+			}
+			return err // Preserve the mismatch for the next restore planner to exclude.
 		}
 		root["priority"] = credential.ProposedTier.priority()
 		// Enablement and tier are independent. Only the usage-event transaction
 		// hard-disables a managed geo rest; inspections retain priority=-1.
 		root["disabled"] = credential.ProposedDisabled
+		if !credential.ProposedDisabled {
+			delete(root, "cpa_pause_marker")
+		}
 		root["credential_tier_router"] = map[string]any{
 			"managed": true, "tier": credential.ProposedTier, "updated_at": time.Now().UTC().Format(time.RFC3339),
 		}

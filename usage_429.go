@@ -133,7 +133,13 @@ func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[strin
 				_, rolledBack := restoreRollback[file.AuthIndex]
 				regrant = rolledBack && root["disabled"] == false
 				if regrant {
-					root["credential_tier_router"] = map[string]any{"managed": true, "tier": tierPaused, "reason": "pool_restore_rollback", "updated_at": time.Now().UTC().Format(time.RFC3339)}
+					r.mu.Lock()
+					marker := restPauseMarker(r.state.Quota[file.AuthIndex].RestUntil)
+					r.mu.Unlock()
+					regrant = marker != ""
+					if regrant {
+						root["cpa_pause_marker"] = marker
+					}
 				}
 				root["disabled"], root["priority"] = true, -1
 				var updated []byte
@@ -211,6 +217,9 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	before := r.state.Pool429Before
 	r.mu.Unlock()
 	cfg.Providers = []string{"antigravity"}
+	if err := r.readRestPauseMarkers(ctx, files, cache); err != nil {
+		return plan{}, err
+	}
 	var actual, planning, unowned []authFile
 	for _, file := range files {
 		if providerOf(file) != "antigravity" || !managedAuthFile(file) {
@@ -218,7 +227,9 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 		}
 		actual = append(actual, file)
 		previous, exists := before[file.AuthIndex]
-		if !exists || (previous.Disabled && !(cache[file.AuthIndex].ManagedRest && cache[file.AuthIndex].NeedsUnpause)) {
+		q := cache[file.AuthIndex]
+		owned := q.ManagedRest && q.NeedsUnpause && file.RestPauseMarker != "" && file.RestPauseMarker == restPauseMarker(q.RestUntil)
+		if !exists || (previous.Disabled && !owned) || (file.Disabled && q.NeedsUnpause && !owned) {
 			unowned = append(unowned, file)
 			continue // Never admit a late import or an external disable into worker planning.
 		}

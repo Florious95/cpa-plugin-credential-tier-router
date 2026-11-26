@@ -187,7 +187,11 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 		restExpired := managedRest && !quota.RestUntil.After(now)
 		// disabled breaks CPA session affinity once; a managed rest is thereafter
 		// enforced by priority alone. Never enable an externally disabled file.
-		effectiveDisabled := file.Disabled && !(managedRest && quota.NeedsUnpause)
+		ownsDisable := managedRest && quota.NeedsUnpause && file.RestPauseMarker != "" && file.RestPauseMarker == restPauseMarker(quota.RestUntil)
+		effectiveDisabled := file.Disabled && !ownsDisable
+		if effectiveDisabled {
+			quota.NeedsUnpause = false // A replaced or externally disabled file cannot inherit ownership.
+		}
 		current := tierFromPriority(file.Priority, effectiveDisabled)
 		if restExpired && !effectiveDisabled && current == tierPaused {
 			current = tierRegular
@@ -343,6 +347,9 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 		}
 		planningConfig.Providers = []string{"antigravity"}
 		planningConfig.ActivePoolSize = 0
+	}
+	if err := r.readRestPauseMarkers(ctx, files, cache); err != nil {
+		return plan{}, err
 	}
 	result, next := planPool(planningConfig, files, cache, pools, time.Now().UTC())
 	if managedOnly || hardPausedID != "" {

@@ -16,16 +16,17 @@ import (
 )
 
 type authFile struct {
-	Name        string `json:"name"`
-	AuthIndex   string `json:"auth_index"`
-	Type        string `json:"type,omitempty"`
-	Provider    string `json:"provider,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Disabled    bool   `json:"disabled"`
-	Unavailable bool   `json:"unavailable"`
-	Priority    int    `json:"priority"`
-	Account     string `json:"account,omitempty"`
-	Email       string `json:"email,omitempty"`
+	Name            string `json:"name"`
+	AuthIndex       string `json:"auth_index"`
+	Type            string `json:"type,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Disabled        bool   `json:"disabled"`
+	Unavailable     bool   `json:"unavailable"`
+	Priority        int    `json:"priority"`
+	Account         string `json:"account,omitempty"`
+	Email           string `json:"email,omitempty"`
+	RestPauseMarker string `json:"-"`
 }
 
 type authDocument struct {

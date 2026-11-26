@@ -45,10 +45,11 @@ func TestReconcileActivePoolPromotesReserveAfterPausedPrimary(t *testing.T) {
 
 func TestReconcileActivePoolRestoresExpiredManagedPause(t *testing.T) {
 	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	restUntil := time.Now().UTC().Add(-time.Minute)
 	host := &fakeHost{
 		files: []authFile{{AuthIndex: "a", Name: "account.json", Provider: "antigravity", Priority: -1, Disabled: true}},
 		documents: map[string]authDocument{
-			"a": {AuthIndex: "a", Name: "account.json", JSON: json.RawMessage(`{"priority":-1,"disabled":true,"credential_tier_router":{"managed":true,"tier":"paused","reason":"geo_400"}}`)},
+			"a": {AuthIndex: "a", Name: "account.json", JSON: json.RawMessage(`{"priority":-1,"disabled":true,"cpa_pause_marker":"` + restPauseMarker(&restUntil) + `"}`)},
 		},
 	}
 	r := newRuntime(host)
@@ -56,7 +57,7 @@ func TestReconcileActivePoolRestoresExpiredManagedPause(t *testing.T) {
 	r.state.Settings = defaultSettings()
 	r.state.Settings.ActivePoolSize = 1
 	r.state.Quota = map[string]quotaSnapshot{
-		"a": {Remaining: ptrInt(80), RestUntil: ptrTime(time.Now().UTC().Add(-time.Minute)), ManagedRest: true, NeedsUnpause: true, Status: quotaReady, ObservedAt: now.Add(-time.Hour)},
+		"a": {Remaining: ptrInt(80), RestUntil: &restUntil, ManagedRest: true, NeedsUnpause: true, Status: quotaReady, ObservedAt: now.Add(-time.Hour)},
 	}
 	// reconcile uses wall clock; an expired deadline remains expired regardless of
 	// the exact current time in this test.

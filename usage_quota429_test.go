@@ -224,9 +224,11 @@ func TestQuota429DoesNotEnableReplacementWithoutOwnershipMarker(t *testing.T) {
 	if err := r.handleUsage(ctx, quota429Event(t, "a")); err != nil {
 		t.Fatal(err)
 	}
-	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "credential_tier_router": nil})
-	if err := r.scheduledInspection(ctx, false); err == nil {
-		t.Fatal("missing ownership marker must reject the projection")
+	q := r.state.Quota["a"]
+	oldDeadline := q.RestUntil.Add(-time.Nanosecond)
+	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "cpa_pause_marker": restPauseMarker(&oldDeadline)})
+	if err := r.scheduledInspection(ctx, false); err != nil {
+		t.Fatal(err)
 	}
 	assertManagedProjection(t, h, "a", true, -1)
 	state, err := r.store.load()
@@ -237,6 +239,41 @@ func TestQuota429DoesNotEnableReplacementWithoutOwnershipMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertManagedProjection(t, h, "a", true, -1)
+}
+
+func TestRestoreNeverEnablesStaleManagedRestMarkerEvenWithPreviouslyEnabledSnapshot(t *testing.T) {
+	r, h := newPool429Fixture(t)
+	ctx := context.Background()
+	const id = "fixture-ag-00"
+	pool429Send(t, r)
+	if err := r.handleUsage(ctx, quota429Event(t, id)); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(h.docs[id], &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc, "cpa_pause_marker")
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.saveAuth(ctx, id+".json", raw); err != nil {
+		t.Fatal(err)
+	}
+	before := *r.state.Quota[id].RestUntil
+	if err := r.handleUsage(ctx, quota429Event(t, id)); err != nil {
+		t.Fatal(err)
+	}
+	if !r.state.Quota[id].RestUntil.Equal(before) || string(h.docs[id]) != string(raw) {
+		t.Fatal("late quota event must not renew a stale or missing marker under the pool lock")
+	}
+	if _, err := r.restorePool429(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r.poolLocked429() || !h.files[id].Disabled || r.state.Quota[id].NeedsUnpause {
+		t.Fatal("restore must exclude the replaced file rather than using its pre-lock enabled status")
+	}
 }
 
 func TestRestoreRegrantsRestOnlyAfterRollingBackSuccessfulUnpause(t *testing.T) {
@@ -261,7 +298,7 @@ func TestRestoreRegrantsRestOnlyAfterRollingBackSuccessfulUnpause(t *testing.T) 
 		t.Fatal("rollback did not leave credentials disabled")
 	}
 	var rollbackDoc map[string]any
-	if err := json.Unmarshal(h.docs[a], &rollbackDoc); err != nil || !ownsRestDisable(rollbackDoc) {
+	if err := json.Unmarshal(h.docs[a], &rollbackDoc); err != nil || !ownsRestDisable(rollbackDoc, restPauseMarker(state.Quota[a].RestUntil)) {
 		t.Fatal("successfully rolled-back credential lost its pause ownership marker")
 	}
 	delete(h.fail, b+".json")
