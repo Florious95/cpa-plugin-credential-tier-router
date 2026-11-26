@@ -115,7 +115,14 @@ type pool429Policy struct {
 	Priority int  `json:"priority"`
 }
 
+type restPauseIntent struct {
+	PauseID string    `json:"pause_id"`
+	Until   time.Time `json:"rest_until"`
+	At      time.Time `json:"at"`
+}
+
 type persistedState struct {
+	PendingRestPauses map[string]restPauseIntent `json:"pending_rest_pauses,omitempty"`
 	PoolLocked429     bool                       `json:"pool_locked_429"`
 	Pool429Since      *time.Time                 `json:"pool_429_since,omitempty"`
 	Pool429Generation uint64                     `json:"pool_429_generation,omitempty"`

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 )
@@ -117,17 +118,21 @@ func eventRestUntil(quota quotaSnapshot, now time.Time, duration time.Duration, 
 	return until
 }
 
-func (r *runtime) commitGeoRest(index string, now, until time.Time, pauseID string) error {
+func (r *runtime) commitGeoRest(index string, intent restPauseIntent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	old := r.state.Quota
-	r.state.Quota = cloneQuota(old)
-	quota := old[index]
-	quota.RestUntil, quota.ManagedRest, quota.NeedsUnpause, quota.PauseID = &until, true, true, pauseID
-	quota.ObservedAt = now
+	oldQuota, oldPending := r.state.Quota, r.state.PendingRestPauses
+	if oldPending[index] != intent {
+		return fmt.Errorf("pending rest intent changed for %s", index)
+	}
+	r.state.Quota, r.state.PendingRestPauses = cloneQuota(oldQuota), maps.Clone(oldPending)
+	quota := oldQuota[index]
+	quota.RestUntil, quota.ManagedRest, quota.NeedsUnpause, quota.PauseID = &intent.Until, true, true, intent.PauseID
+	quota.ObservedAt = intent.At
 	r.state.Quota[index] = quota
+	delete(r.state.PendingRestPauses, index)
 	if err := r.store.save(r.state); err != nil {
-		r.state.Quota = old
+		r.state.Quota, r.state.PendingRestPauses = oldQuota, oldPending
 		return fmt.Errorf("persist managed rest for %s: %w", index, err)
 	}
 	return nil
@@ -229,6 +234,9 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if r.loadErr != nil {
 		return fmt.Errorf("load state: %w", r.loadErr)
 	}
+	if _, err := r.recoverRestPauseIntent(ctx, index); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	cfg := normalizeSettings(r.state.Settings)
 	// A late event must not grant auto-enable ownership to a credential that
@@ -258,11 +266,19 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if err != nil || projection == nil {
 		return err
 	}
-	if err := r.host.saveAuth(ctx, projection.name, projection.paused); err != nil {
-		r.recordHistory(trigger, 0, 1, "即时熔断失败："+safeError(err))
-		return errors.Join(err, r.persistState())
+	intent := restPauseIntent{PauseID: pauseID, Until: until, At: now}
+	if err := r.writeRestPauseIntent(index, intent); err != nil {
+		return err // No credential write without a durable recovery intent.
 	}
-	if err := r.commitGeoRest(index, now, until, pauseID); err != nil {
+	if err := r.host.saveAuth(ctx, projection.name, projection.paused); err != nil {
+		verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		committed, recoverErr := r.recoverRestPauseIntent(verifyCtx, index)
+		cancel()
+		if !committed {
+			r.recordHistory(trigger, 0, 1, "即时熔断失败："+safeError(err))
+			return errors.Join(err, recoverErr, r.persistState())
+		}
+	} else if err := r.commitGeoRest(index, intent); err != nil {
 		return errors.Join(err, r.rollbackRestProjection(ctx, index, projection))
 	}
 	r.markLatestGeoPaused(event, until)

@@ -304,6 +304,9 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 	if r.loadErr != nil {
 		return plan{}, fmt.Errorf("load state: %w", r.loadErr)
 	}
+	if apply {
+		r.recoverRestPauseIntents(ctx)
+	}
 	files, err := r.host.listAuth(ctx)
 	if err != nil {
 		return plan{}, err
@@ -313,7 +316,9 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 	cache := cloneQuota(r.state.Quota)
 	pools := cloneActivePool(r.state.ActivePool)
 	locked := r.state.PoolLocked429 || r.pool429Pending
+	pending := r.state.PendingRestPauses
 	r.mu.Unlock()
+	files = slices.DeleteFunc(slices.Clone(files), func(f authFile) bool { return pending[f.AuthIndex].PauseID != "" })
 	ag := map[string]bool{}
 	for _, file := range files {
 		ag[file.AuthIndex] = providerOf(file) == "antigravity"

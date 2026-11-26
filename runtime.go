@@ -163,6 +163,9 @@ func (r *runtime) configure(config settings) error {
 		}
 		r.recordHistory("429启动保护", 0, 1, "状态重写失败；保留调度拒绝闸与人工恢复端点："+safeError(err))
 	}
+	r.commitMu.Lock()
+	r.recoverRestPauseIntents(context.Background())
+	r.commitMu.Unlock()
 	if r.poolLocked429() {
 		if err := r.enforcePoolLock429(context.Background()); err != nil {
 			// A partial projection must not prevent capability registration:

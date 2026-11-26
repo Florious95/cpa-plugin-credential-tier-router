@@ -184,6 +184,9 @@ func (r *runtime) enforcePoolLock429(ctx context.Context) error {
 	if !locked {
 		return nil
 	}
+	if r.loadErr == nil {
+		r.recoverRestPauseIntents(ctx)
+	}
 	_, err := r.pauseAllAntigravityCredentials(ctx)
 	return err
 }
@@ -201,6 +204,10 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	if !locked {
 		return r.inspect(ctx) // Idempotent: never replay a previous restore snapshot.
 	}
+	if r.loadErr != nil {
+		return plan{}, fmt.Errorf("load state: %w", r.loadErr)
+	}
+	r.recoverRestPauseIntents(ctx)
 	if _, err := r.pauseAllAntigravityCredentials(ctx); err != nil {
 		return plan{}, err
 	}
@@ -212,13 +219,13 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	cfg := normalizeSettings(r.state.Settings)
 	cache := cloneQuota(r.state.Quota)
 	pools := cloneActivePool(r.state.ActivePool)
-	before := r.state.Pool429Before
+	before, pending := r.state.Pool429Before, r.state.PendingRestPauses
 	r.mu.Unlock()
 	cfg.Providers = []string{"antigravity"}
 	r.readRestPauseMarkers(ctx, files, cache)
 	var actual, planning, unowned []authFile
 	for _, file := range files {
-		if providerOf(file) != "antigravity" || !managedAuthFile(file) || file.RestPauseReadFailed {
+		if providerOf(file) != "antigravity" || !managedAuthFile(file) || file.RestPauseReadFailed || pending[file.AuthIndex].PauseID != "" {
 			continue
 		}
 		actual = append(actual, file)
