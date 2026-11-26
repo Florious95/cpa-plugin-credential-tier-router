@@ -17,6 +17,7 @@ import (
 
 type authFile struct {
 	Name                string `json:"name"`
+	Path                string `json:"path,omitempty"`
 	AuthIndex           string `json:"auth_index"`
 	Type                string `json:"type,omitempty"`
 	Provider            string `json:"provider,omitempty"`

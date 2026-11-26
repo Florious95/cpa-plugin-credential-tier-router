@@ -272,6 +272,9 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	if incomplete {
 		return plan{}, errors.New("snapshot credentials missing or unreadable; pool remains locked")
 	}
+	if err := r.verifyRestoreInventory(ctx, before, result); err != nil {
+		return plan{}, err
+	}
 	clearIDs := make(map[string]string)
 	for _, c := range result.Credentials {
 		if id := cache[c.AuthIndex].PauseID; !c.ProposedDisabled && id != "" {
