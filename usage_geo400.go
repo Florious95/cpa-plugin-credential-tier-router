@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -267,19 +266,8 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 		return err
 	}
 	intent := restPauseIntent{PauseID: pauseID, Until: until, At: now}
-	if err := r.writeRestPauseIntent(index, intent); err != nil {
-		return err // No credential write without a durable recovery intent.
-	}
-	if err := r.host.saveAuth(ctx, projection.name, projection.paused); err != nil {
-		verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		committed, recoverErr := r.recoverRestPauseIntent(verifyCtx, index)
-		cancel()
-		if !committed {
-			r.recordHistory(trigger, 0, 1, "即时熔断失败："+safeError(err))
-			return errors.Join(err, recoverErr, r.persistState())
-		}
-	} else if err := r.commitGeoRest(index, intent); err != nil {
-		return errors.Join(err, r.rollbackRestProjection(ctx, index, projection))
+	if err := r.applyRestPause(ctx, index, projection, intent, false); err != nil {
+		return err
 	}
 	r.markLatestGeoPaused(event, until)
 	r.recordHistory(trigger, 1, 0, fmt.Sprintf("已熔断并强制休眠至 %s；下次巡检解除禁用但保持暂停", until.Format(time.RFC3339)))

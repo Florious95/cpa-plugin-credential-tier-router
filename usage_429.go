@@ -121,7 +121,7 @@ func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[strin
 			continue
 		}
 		document, err := r.host.getAuth(ctx, file.AuthIndex)
-		var rollbackID string
+		var intent restPauseIntent
 		if err == nil {
 			var root map[string]any
 			if err = json.Unmarshal(document.JSON, &root); err == nil && root == nil {
@@ -132,16 +132,30 @@ func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[strin
 				// exposes no cooldown-preserving policy patch or batch transaction.
 				_, rolledBack := restoreRollback[file.AuthIndex]
 				if rolledBack && root["disabled"] == false {
-					rollbackID, err = newRestPauseID()
-					if err == nil {
-						root["cpa_pause_id"] = rollbackID
+					r.mu.Lock()
+					q := r.state.Quota[file.AuthIndex]
+					r.mu.Unlock()
+					if q.ManagedRest && q.RestUntil != nil && !q.NeedsUnpause {
+						intent = restPauseIntent{Until: *q.RestUntil, At: q.ObservedAt}
+						if intent.At.IsZero() {
+							intent.At = time.Now().UTC()
+						}
+						intent.PauseID, err = newRestPauseID()
+						if err == nil {
+							root["cpa_pause_id"] = intent.PauseID
+						}
 					}
 				}
 				root["disabled"], root["priority"] = true, -1
 				var updated []byte
 				if err == nil {
 					if updated, err = json.Marshal(root); err == nil {
-						err = r.host.saveAuth(ctx, firstText(document.Name, file.Name), updated)
+						name := firstText(document.Name, file.Name)
+						if intent.PauseID != "" {
+							err = r.applyRestPause(ctx, file.AuthIndex, &restProjection{name: name, paused: updated}, intent, true)
+						} else {
+							err = r.host.saveAuth(ctx, name, updated)
+						}
 					}
 				}
 			}
@@ -151,28 +165,8 @@ func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[strin
 			continue
 		}
 		changed++
-		if rollbackID != "" {
-			failures = append(failures, r.regrantRestUnpause(file.AuthIndex, rollbackID))
-		}
 	}
 	return changed, errors.Join(failures...)
-}
-
-func (r *runtime) regrantRestUnpause(index, pauseID string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	q := r.state.Quota[index]
-	if !q.ManagedRest || q.RestUntil == nil || q.NeedsUnpause {
-		return nil
-	}
-	q.NeedsUnpause, q.PauseID = true, pauseID
-	r.state.Quota[index] = q
-	if err := r.store.save(r.state); err != nil {
-		q.NeedsUnpause, q.PauseID = false, ""
-		r.state.Quota[index] = q
-		return fmt.Errorf("persist rollback rest permission for %s: %w", index, err)
-	}
-	return nil
 }
 
 func (r *runtime) enforcePoolLock429(ctx context.Context) error {

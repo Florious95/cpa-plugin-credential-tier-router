@@ -3,10 +3,37 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 )
+
+// Both regular pauses and restore compensation use the same write-ahead path.
+// During restore compensation, keep the auth disabled on a ledger write
+// failure: the lock remains active, and the pending intent can be replayed.
+func (r *runtime) applyRestPause(ctx context.Context, index string, projection *restProjection, intent restPauseIntent, restoreRollback bool) error {
+	if err := r.writeRestPauseIntent(index, intent); err != nil {
+		return err
+	}
+	if err := r.host.saveAuth(ctx, projection.name, projection.paused); err != nil {
+		verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		committed, recoverErr := r.recoverRestPauseIntent(verifyCtx, index)
+		if committed {
+			return nil
+		}
+		return errors.Join(err, recoverErr)
+	}
+	if err := r.commitGeoRest(index, intent); err != nil {
+		if restoreRollback {
+			return err
+		}
+		return errors.Join(err, r.rollbackRestProjection(ctx, index, projection))
+	}
+	return nil
+}
 
 // commitMu serializes the prepare/recover sequence with auth projections.
 // An intent is durable before the host write, but never grants enablement.
