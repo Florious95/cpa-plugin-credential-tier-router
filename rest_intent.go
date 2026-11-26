@@ -10,10 +10,8 @@ import (
 	"time"
 )
 
-// Both regular pauses and restore compensation use the same write-ahead path.
-// During restore compensation, keep the auth disabled on a ledger write
-// failure: the lock remains active, and the pending intent can be replayed.
-func (r *runtime) applyRestPause(ctx context.Context, index string, projection *restProjection, intent restPauseIntent, restoreRollback bool) error {
+// A pause and its renewals share the same write-ahead path.
+func (r *runtime) applyRestPause(ctx context.Context, index string, projection *restProjection, intent restPauseIntent) error {
 	if err := r.writeRestPauseIntent(index, intent); err != nil {
 		return err
 	}
@@ -27,9 +25,6 @@ func (r *runtime) applyRestPause(ctx context.Context, index string, projection *
 		return errors.Join(err, recoverErr)
 	}
 	if err := r.commitGeoRest(index, intent); err != nil {
-		if restoreRollback {
-			return err
-		}
 		return errors.Join(err, r.rollbackRestProjection(ctx, index, projection))
 	}
 	return nil

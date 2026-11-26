@@ -123,6 +123,7 @@ type restPauseIntent struct {
 
 type persistedState struct {
 	PendingRestPauses map[string]restPauseIntent `json:"pending_rest_pauses,omitempty"`
+	Pool429Restoring  bool                       `json:"pool_429_restoring,omitempty"`
 	PoolLocked429     bool                       `json:"pool_locked_429"`
 	Pool429Since      *time.Time                 `json:"pool_429_since,omitempty"`
 	Pool429Generation uint64                     `json:"pool_429_generation,omitempty"`

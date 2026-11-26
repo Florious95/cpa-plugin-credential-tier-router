@@ -445,7 +445,7 @@ func TestRestoreNeverEnablesStaleManagedRestMarkerEvenWithPreviouslyEnabledSnaps
 	}
 }
 
-func TestRestoreRegrantsRestOnlyAfterRollingBackSuccessfulUnpause(t *testing.T) {
+func TestPartialRestoreDoesNotReverseLaterManualDisable(t *testing.T) {
 	r, h := newPool429Fixture(t)
 	ctx := context.Background()
 	const a, b = "fixture-ag-00", "fixture-ag-01"
@@ -459,23 +459,30 @@ func TestRestoreRegrantsRestOnlyAfterRollingBackSuccessfulUnpause(t *testing.T) 
 	if _, err := r.restorePool429(ctx); err == nil {
 		t.Fatal("expected partial restore failure")
 	}
-	state, err := r.store.load()
-	if err != nil || !state.PoolLocked429 || !state.Quota[a].NeedsUnpause || state.Quota[b].NeedsUnpause {
-		t.Fatalf("rollback did not restore precisely the successful enable: a=%+v b=%+v err=%v", state.Quota[a], state.Quota[b], err)
+	if !r.poolLocked429() || h.files[a].Disabled || !h.files[b].Disabled {
+		t.Fatal("a successful write must stay enabled while the gateway remains locked")
 	}
-	if !h.files[a].Disabled || !h.files[b].Disabled {
-		t.Fatal("rollback did not leave credentials disabled")
+	var doc map[string]any
+	if err := json.Unmarshal(h.docs[a], &doc); err != nil {
+		t.Fatal(err)
 	}
-	var rollbackDoc map[string]any
-	if err := json.Unmarshal(h.docs[a], &rollbackDoc); err != nil || !ownsRestDisable(rollbackDoc, state.Quota[a].PauseID) {
-		t.Fatal("successfully rolled-back credential lost its pause ownership marker")
+	if _, exists := doc["cpa_pause_id"]; exists {
+		t.Fatal("successful enable retained the on-file authority")
+	}
+	doc["disabled"] = true
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.saveAuth(ctx, a+".json", raw); err != nil {
+		t.Fatal(err)
 	}
 	delete(h.fail, b+".json")
 	if _, err := r.restorePool429(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if r.poolLocked429() || h.files[a].Disabled || h.files[a].Priority != -1 || r.state.Quota[a].NeedsUnpause {
-		t.Fatal("retry did not release the rolled-back credential into phase two")
+	if r.poolLocked429() || !h.files[a].Disabled || h.files[b].Disabled || r.state.Quota[a].NeedsUnpause {
+		t.Fatal("resume overrode a later manual disable or failed to restore b")
 	}
 }
 

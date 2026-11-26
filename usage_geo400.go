@@ -266,7 +266,7 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 		return err
 	}
 	intent := restPauseIntent{PauseID: pauseID, Until: until, At: now}
-	if err := r.applyRestPause(ctx, index, projection, intent, false); err != nil {
+	if err := r.applyRestPause(ctx, index, projection, intent); err != nil {
 		return err
 	}
 	r.markLatestGeoPaused(event, until)

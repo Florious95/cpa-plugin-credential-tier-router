@@ -52,6 +52,7 @@ func (r *runtime) tripPool429(ctx context.Context) error {
 	defer r.commitMu.Unlock()
 	r.mu.Lock()
 	r.state.PoolLocked429 = true
+	r.state.Pool429Restoring = false // A genuinely new trip re-applies the protection projection.
 	r.state.Pool429Generation++
 	if r.state.Pool429Since == nil {
 		now := time.Now().UTC()
@@ -77,12 +78,6 @@ func (r *runtime) tripPool429(ctx context.Context) error {
 // Caller holds commitMu. This is durable intent plus per-file projection, not a
 // filesystem batch transaction. Keep disabling other accounts after any error.
 func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, error) {
-	return r.projectPoolLock(ctx, nil)
-}
-
-// A failed restore may re-grant a consumed permission only after successfully
-// putting that exact credential back under plugin-owned hard-disable.
-func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[string]struct{}) (int, error) {
 	files, listErr := r.host.listAuth(ctx)
 	if listErr != nil {
 		return 0, listErr // No inventory means no original-policy snapshot yet.
@@ -121,42 +116,16 @@ func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[strin
 			continue
 		}
 		document, err := r.host.getAuth(ctx, file.AuthIndex)
-		var intent restPauseIntent
 		if err == nil {
 			var root map[string]any
 			if err = json.Unmarshal(document.JSON, &root); err == nil && root == nil {
 				err = errors.New("AG认证文档不是JSON对象")
 			}
 			if err == nil {
-				// CPA may clear runtime cooldowns on hard-disable; this host API
-				// exposes no cooldown-preserving policy patch or batch transaction.
-				_, rolledBack := restoreRollback[file.AuthIndex]
-				if rolledBack && root["disabled"] == false {
-					r.mu.Lock()
-					q := r.state.Quota[file.AuthIndex]
-					r.mu.Unlock()
-					if q.ManagedRest && q.RestUntil != nil && !q.NeedsUnpause {
-						intent = restPauseIntent{Until: *q.RestUntil, At: q.ObservedAt}
-						if intent.At.IsZero() {
-							intent.At = time.Now().UTC()
-						}
-						intent.PauseID, err = newRestPauseID()
-						if err == nil {
-							root["cpa_pause_id"] = intent.PauseID
-						}
-					}
-				}
 				root["disabled"], root["priority"] = true, -1
 				var updated []byte
-				if err == nil {
-					if updated, err = json.Marshal(root); err == nil {
-						name := firstText(document.Name, file.Name)
-						if intent.PauseID != "" {
-							err = r.applyRestPause(ctx, file.AuthIndex, &restProjection{name: name, paused: updated}, intent, true)
-						} else {
-							err = r.host.saveAuth(ctx, name, updated)
-						}
-					}
+				if updated, err = json.Marshal(root); err == nil {
+					err = r.host.saveAuth(ctx, firstText(document.Name, file.Name), updated)
 				}
 			}
 		}
@@ -173,13 +142,16 @@ func (r *runtime) enforcePoolLock429(ctx context.Context) error {
 	r.commitMu.Lock()
 	defer r.commitMu.Unlock()
 	r.mu.Lock()
-	locked := r.state.PoolLocked429
+	locked, restoring := r.state.PoolLocked429, r.state.Pool429Restoring
 	r.mu.Unlock()
 	if !locked {
 		return nil
 	}
 	if r.loadErr == nil {
 		r.recoverRestPauseIntents(ctx)
+	}
+	if restoring {
+		return nil // Keep the routing latch; never undo successful restore writes.
 	}
 	_, err := r.pauseAllAntigravityCredentials(ctx)
 	return err
@@ -194,6 +166,7 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 		return plan{}, errPool429Changed
 	}
 	locked, revision := r.state.PoolLocked429, r.pool429Revision
+	restoring := r.state.Pool429Restoring
 	r.mu.Unlock()
 	if !locked {
 		return r.inspect(ctx) // Idempotent: never replay a previous restore snapshot.
@@ -202,8 +175,20 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 		return plan{}, fmt.Errorf("load state: %w", r.loadErr)
 	}
 	r.recoverRestPauseIntents(ctx)
-	if _, err := r.pauseAllAntigravityCredentials(ctx); err != nil {
-		return plan{}, err
+	if !restoring {
+		if _, err := r.pauseAllAntigravityCredentials(ctx); err != nil {
+			return plan{}, err
+		}
+		r.mu.Lock()
+		r.state.Pool429Restoring = true
+		err := r.store.save(r.state)
+		if err != nil {
+			r.state.Pool429Restoring = false
+		}
+		r.mu.Unlock()
+		if err != nil {
+			return plan{}, err
+		}
 	}
 	files, err := r.host.listAuth(ctx)
 	if err != nil {
@@ -218,19 +203,25 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	cfg.Providers = []string{"antigravity"}
 	r.readRestPauseMarkers(ctx, files, cache)
 	var actual, planning, unowned []authFile
+	incomplete := false
 	for _, file := range files {
-		if providerOf(file) != "antigravity" || !managedAuthFile(file) || file.RestPauseReadFailed || pending[file.AuthIndex].PauseID != "" {
+		if providerOf(file) != "antigravity" || !managedAuthFile(file) {
+			continue
+		}
+		if file.RestPauseReadFailed || pending[file.AuthIndex].PauseID != "" {
+			incomplete = true
 			continue
 		}
 		actual = append(actual, file)
 		previous, exists := before[file.AuthIndex]
 		q := cache[file.AuthIndex]
 		owned := q.ManagedRest && q.NeedsUnpause && file.RestPauseMarker != "" && file.RestPauseMarker == q.PauseID
-		if !exists || (previous.Disabled && !owned) || (file.Disabled && q.NeedsUnpause && !owned) {
+		restored := !file.Disabled && q.ManagedRest && q.NeedsUnpause && q.PauseID != ""
+		if !exists || (previous.Disabled && !owned && !restored) || (file.Disabled && q.NeedsUnpause && !owned) {
 			unowned = append(unowned, file)
 			continue // Never admit a late import or an external disable into worker planning.
 		}
-		file.Disabled, file.Priority = previous.Disabled, previous.Priority
+		file.Disabled, file.Priority = previous.Disabled && !restored, previous.Priority
 		planning = append(planning, file)
 	}
 	result, next := planPool(cfg, planning, cache, pools, time.Now().UTC())
@@ -265,36 +256,32 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 			result.Changes++
 		}
 	}
-	rollback := map[string]struct{}{}
-	if err = r.applyPlanWithPoolLock(ctx, actual, result, rollback); err != nil {
-		_, pauseErr := r.projectPoolLock(ctx, rollback)
-		return plan{}, errors.Join(err, pauseErr)
+	if err = r.applyPlanWithPoolLock(ctx, actual, result, true); err != nil {
+		return plan{}, err
+	}
+	if incomplete {
+		return plan{}, errors.New("some credentials could not be checked; pool remains locked")
 	}
 	finishManagedRestProjection(cache, result)
 	r.mu.Lock()
 	if revision != r.pool429Revision || r.pool429Pending {
 		r.mu.Unlock()
-		_, pauseErr := r.projectPoolLock(ctx, rollback)
-		return plan{}, errors.Join(errPool429Changed, pauseErr)
+		return plan{}, errPool429Changed
 	}
 	oldQuota, oldPools, oldSince, oldHistory := r.state.Quota, r.state.ActivePool, r.state.Pool429Since, r.state.History
 	r.state.Quota, r.state.ActivePool = cache, next
-	r.state.PoolLocked429, r.state.Pool429Since, r.state.Pool429Before = false, nil, nil
+	r.state.PoolLocked429, r.state.Pool429Restoring, r.state.Pool429Since, r.state.Pool429Before = false, false, nil, nil
 	r.state.History = append([]historyEntry{{At: time.Now().UTC(), Trigger: "429人工恢复", Changes: result.Changes, Summary: "已人工解除全池熔断；原停用与普通休眠保留；未调用冷却重置接口"}}, oldHistory...)
 	if len(r.state.History) > 12 {
 		r.state.History = r.state.History[:12]
 	}
 	err = r.store.save(r.state)
 	if err != nil {
-		r.state.PoolLocked429, r.state.Pool429Since, r.state.Pool429Before = true, oldSince, before
+		r.state.PoolLocked429, r.state.Pool429Restoring, r.state.Pool429Since, r.state.Pool429Before = true, true, oldSince, before
 		r.state.Quota, r.state.ActivePool, r.state.History = oldQuota, oldPools, oldHistory
 	} else {
 		r.latest = plan{} // Re-read the actual post-write projection on the next GET.
 	}
 	r.mu.Unlock()
-	if err != nil {
-		_, pauseErr := r.projectPoolLock(ctx, rollback)
-		return plan{}, errors.Join(err, pauseErr)
-	}
-	return result, nil
+	return result, err
 }
