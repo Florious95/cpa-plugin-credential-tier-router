@@ -29,6 +29,9 @@ func (r *runtime) pauseGeoCredential(ctx context.Context, event usageEvent) erro
 	if err := json.Unmarshal(document.JSON, &root); err != nil {
 		return fmt.Errorf("decode geo-400 credential %s: %w", index, err)
 	}
+	if root == nil {
+		return fmt.Errorf("credential %s document is not a JSON object", index)
+	}
 	root["priority"] = -1
 	root["disabled"] = true
 	reason := "geo_400"
@@ -62,8 +65,9 @@ func (r *runtime) markGeoRest(event usageEvent, now time.Time, duration time.Dur
 	}
 	quota := r.state.Quota[index]
 	until := now.Add(duration)
-	// Repeated errors do not extend an already established rest deadline.
-	if quota.RestUntil != nil && quota.RestUntil.After(now) {
+	// Ordinary errors preserve an active rest; quota 429 guarantees at least 16 hours.
+	if quota.RestUntil != nil && quota.RestUntil.After(now) &&
+		(event.Failure.StatusCode != 429 || quota.RestUntil.After(until)) {
 		until = *quota.RestUntil
 	}
 	quota.RestUntil = &until
@@ -93,39 +97,6 @@ func (r *runtime) markLatestGeoPaused(event usageEvent, until time.Time) {
 		credential.Reason = fmt.Sprintf("强制休眠至 %s", until.UTC().Format(time.RFC3339))
 		credential.Changed = true
 	}
-}
-
-// Only structured Google ErrorInfo qualifies. Treat malformed and unknown 429s
-// conservatively; a mention in a message or RetryInfo is not sufficient.
-func isGoogleQuotaExhausted(body string) bool {
-	type detail struct {
-		Type   string `json:"@type"`
-		Reason string `json:"reason"`
-	}
-	var payload struct {
-		Details []detail `json:"details"`
-		Error   *struct {
-			Details []detail `json:"details"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(body), &payload); err != nil {
-		return false
-	}
-	details := payload.Details
-	if payload.Error != nil {
-		details = payload.Error.Details
-	}
-	found := false
-	for _, d := range details {
-		if d.Type != "type.googleapis.com/google.rpc.ErrorInfo" {
-			continue
-		}
-		if d.Reason != "QUOTA_EXHAUSTED" {
-			return false
-		}
-		found = true
-	}
-	return found
 }
 
 func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
@@ -164,7 +135,14 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	defer r.commitMu.Unlock()
 	r.mu.Lock()
 	cfg := normalizeSettings(r.state.Settings)
+	// A late event must not grant auto-enable ownership to a credential that
+	// was externally disabled or absent from the full-pool lock snapshot.
+	previous, known := r.state.Pool429Before[index]
+	external := r.state.PoolLocked429 && (!known || (previous.Disabled && !r.state.Quota[index].ManagedRest))
 	r.mu.Unlock()
+	if event.Failure.StatusCode == 429 && external {
+		return nil
+	}
 	if restDuration == 0 {
 		restDuration = time.Duration(cfg.Geo400RestHours) * time.Hour
 	}

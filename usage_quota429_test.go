@@ -7,18 +7,25 @@ import (
 	"time"
 )
 
+const fixtureQuota429 = `{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"9792s"}]}}`
+
+func quota429Event(t *testing.T) []byte {
+	t.Helper()
+	event, err := json.Marshal(usageEvent{Provider: "antigravity", AuthIndex: "fixture", Failed: true, Failure: usageFailure{StatusCode: 429, Body: fixtureQuota429}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return event
+}
+
 func TestQuota429ManagedRest(t *testing.T) {
 	r, h := newHTTP403HubRuntime(t)
 	now := time.Now().UTC()
 	r.geoNow = func() time.Time { return now }
-	event, err := json.Marshal(usageEvent{Provider: "antigravity", AuthIndex: "fixture", Failed: true, Failure: usageFailure{
-		StatusCode: 429, Body: `{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"9792s"}]}}`,
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	shortRest := now.Add(time.Hour)
+	r.state.Quota["fixture"] = quotaSnapshot{ManagedRest: true, RestUntil: &shortRest}
 	ctx := context.Background()
-	if err := r.handleUsage(ctx, event); err != nil {
+	if err := r.handleUsage(ctx, quota429Event(t)); err != nil {
 		t.Fatal(err)
 	}
 	state, err := r.store.load()
@@ -37,6 +44,31 @@ func TestQuota429ManagedRest(t *testing.T) {
 	}
 }
 
+func TestLateQuota429DoesNotAdoptExternallyDisabled(t *testing.T) {
+	r, h := newHTTP403HubRuntime(t)
+	r.state.PoolLocked429 = true
+	r.state.Pool429Before = map[string]pool429Policy{"fixture": {Disabled: true, Priority: -1}}
+	h.file.Disabled, h.file.Priority = true, -1
+	original := string(h.document)
+	if err := r.handleUsage(context.Background(), quota429Event(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !r.state.Pool429Before["fixture"].Disabled || r.state.Quota["fixture"].ManagedRest || string(h.document) != original {
+		t.Fatal("late quota event gained auto-enable ownership of an externally disabled credential")
+	}
+}
+
+func TestQuota429NullAuthDocumentDoesNotPanic(t *testing.T) {
+	r, h := newHTTP403HubRuntime(t)
+	h.document = json.RawMessage(`null`)
+	if err := r.handleUsage(context.Background(), quota429Event(t)); err == nil {
+		t.Fatal("expected a controlled projection error")
+	}
+	if string(h.document) != "null" || r.poolLocked429() {
+		t.Fatal("malformed document was rewritten or quota event tripped the lock")
+	}
+}
+
 func TestQuota429ClassifierUsesTypedDetails(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
@@ -48,6 +80,11 @@ func TestQuota429ClassifierUsesTypedDetails(t *testing.T) {
 		{"other detail type", `{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","reason":"QUOTA_EXHAUSTED"}]}`, false},
 		{"other reason", `{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED"}]}`, false},
 		{"incomplete", `{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"}`, false},
+		{"duplicate reason", `{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","reason":"QUOTA_EXHAUSTED"}]}`, false},
+		{"case variant collision", `{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","Reason":"RATE_LIMIT_EXCEEDED","reason":"QUOTA_EXHAUSTED"}]}`, false},
+		{"competing details", `{"details":[],"error":` + fixtureQuota429 + `}`, false},
+		{"duplicate detail objects", `{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"},{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"}]}`, false},
+		{"duplicate error field", `{"error":null,` + fixtureQuota429[1:], false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if isGoogleQuotaExhausted(tc.body) != tc.want {
