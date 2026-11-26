@@ -122,6 +122,9 @@ func (r *runtime) pauseAllAntigravityCredentials(ctx context.Context) (int, erro
 				err = errors.New("AG认证文档不是JSON对象")
 			}
 			if err == nil {
+				if root["disabled"] == false {
+					delete(root, "cpa_pause_restored") // New lock owns this fresh disable.
+				}
 				root["disabled"], root["priority"] = true, -1
 				var updated []byte
 				if updated, err = json.Marshal(root); err == nil {
@@ -201,8 +204,9 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	before, pending := r.state.Pool429Before, r.state.PendingRestPauses
 	r.mu.Unlock()
 	cfg.Providers = []string{"antigravity"}
-	r.readRestPauseMarkers(ctx, files, cache)
+	r.readRestPauseMarkers(ctx, files, cache, true)
 	var actual, planning, unowned []authFile
+	checked := make(map[string]bool, len(before))
 	incomplete := false
 	for _, file := range files {
 		if providerOf(file) != "antigravity" || !managedAuthFile(file) {
@@ -212,6 +216,7 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 			incomplete = true
 			continue
 		}
+		checked[file.AuthIndex] = true
 		actual = append(actual, file)
 		previous, exists := before[file.AuthIndex]
 		q := cache[file.AuthIndex]
@@ -223,6 +228,11 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 		}
 		file.Disabled, file.Priority = previous.Disabled && !restored, previous.Priority
 		planning = append(planning, file)
+	}
+	for index := range before {
+		if !checked[index] {
+			incomplete = true
+		}
 	}
 	result, next := planPool(cfg, planning, cache, pools, time.Now().UTC())
 	for _, file := range unowned {
@@ -260,7 +270,13 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 		return plan{}, err
 	}
 	if incomplete {
-		return plan{}, errors.New("some credentials could not be checked; pool remains locked")
+		return plan{}, errors.New("snapshot credentials missing or unreadable; pool remains locked")
+	}
+	clearIDs := make(map[string]string)
+	for _, c := range result.Credentials {
+		if id := cache[c.AuthIndex].PauseID; !c.ProposedDisabled && id != "" {
+			clearIDs[c.AuthIndex] = id
+		}
 	}
 	finishManagedRestProjection(cache, result)
 	r.mu.Lock()
@@ -283,5 +299,32 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 		r.latest = plan{} // Re-read the actual post-write projection on the next GET.
 	}
 	r.mu.Unlock()
+	if err == nil {
+		r.clearRestoredPauseIDs(ctx, clearIDs)
+	}
 	return result, err
+}
+
+// Cleanup is intentionally after the durable unlock commit. If it is
+// interrupted, an on-file ID has no matching lease and grants nothing.
+func (r *runtime) clearRestoredPauseIDs(ctx context.Context, ids map[string]string) {
+	for index, id := range ids {
+		doc, err := r.host.getAuth(ctx, index)
+		if err != nil {
+			continue
+		}
+		var root map[string]any
+		if !managedAuthFile(authFile{Name: doc.Name, Provider: "antigravity"}) ||
+			(doc.AuthIndex != "" && doc.AuthIndex != index) || json.Unmarshal(doc.JSON, &root) != nil ||
+			root["disabled"] != false || root["cpa_pause_id"] != id || root["cpa_pause_restored"] != true {
+			continue
+		}
+		delete(root, "cpa_pause_id")
+		delete(root, "cpa_pause_restored")
+		if raw, err := json.Marshal(root); err == nil {
+			if err := r.host.saveAuth(ctx, doc.Name, raw); err != nil {
+				r.recordHistory("恢复后标记清理", 0, 1, "残留标记无解封权限："+safeError(err))
+			}
+		}
+	}
 }

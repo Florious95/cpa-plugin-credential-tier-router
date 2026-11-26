@@ -466,8 +466,8 @@ func TestPartialRestoreDoesNotReverseLaterManualDisable(t *testing.T) {
 	if err := json.Unmarshal(h.docs[a], &doc); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := doc["cpa_pause_id"]; exists {
-		t.Fatal("successful enable retained the on-file authority")
+	if doc["cpa_pause_id"] != r.state.Quota[a].PauseID || doc["cpa_pause_restored"] != true {
+		t.Fatal("partial restore must keep the UUID without granting another enable")
 	}
 	doc["disabled"] = true
 	raw, err := json.Marshal(doc)
@@ -483,6 +483,36 @@ func TestPartialRestoreDoesNotReverseLaterManualDisable(t *testing.T) {
 	}
 	if r.poolLocked429() || !h.files[a].Disabled || h.files[b].Disabled || r.state.Quota[a].NeedsUnpause {
 		t.Fatal("resume overrode a later manual disable or failed to restore b")
+	}
+}
+
+func TestPartialRestoreRetainsPauseIDAcrossFreshTrip(t *testing.T) {
+	r, h := newPool429Fixture(t)
+	ctx := context.Background()
+	const a, b = "fixture-ag-00", "fixture-ag-01"
+	pool429Send(t, r)
+	for _, id := range []string{a, b} {
+		if err := r.handleUsage(ctx, quota429Event(t, id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lease := r.state.Quota[a].PauseID
+	h.fail[b+".json"] = true
+	if _, err := r.restorePool429(ctx); err == nil || h.files[a].Disabled {
+		t.Fatal("expected b failure after a completed")
+	}
+	pool429Send(t, r)
+	var doc map[string]any
+	if err := json.Unmarshal(h.docs[a], &doc); err != nil || !h.files[a].Disabled || !ownsRestDisable(doc, lease) {
+		t.Fatalf("new trip must preserve a's pause ownership: %v", err)
+	}
+	delete(h.fail, b+".json")
+	if _, err := r.restorePool429(ctx); err != nil {
+		t.Fatal(err)
+	}
+	doc = nil
+	if err := json.Unmarshal(h.docs[a], &doc); err != nil || h.files[a].Disabled || h.files[a].Priority != -1 || doc["cpa_pause_id"] != nil || r.state.Quota[a].NeedsUnpause {
+		t.Fatalf("full restore did not retire a's pause ID: %v", err)
 	}
 }
 

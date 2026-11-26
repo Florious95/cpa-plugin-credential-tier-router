@@ -483,7 +483,7 @@ func (r *runtime) applyPlan(ctx context.Context, files []authFile, result plan) 
 }
 
 // Explicit restore retains the routing lock and consumes rest permissions in
-// the final state commit. Its successful writes remove each pause ID at once.
+// the final state commit; successful writes mark pause IDs as released.
 func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, result plan, allowLocked bool) error {
 	byIndex := make(map[string]authFile, len(files))
 	for _, file := range files {
@@ -543,7 +543,12 @@ func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, r
 		// hard-disables a managed geo rest; inspections retain priority=-1.
 		root["disabled"] = credential.ProposedDisabled
 		if !credential.ProposedDisabled {
-			delete(root, "cpa_pause_id")
+			if allowLocked && credential.Quota.NeedsUnpause && root["cpa_pause_id"] == credential.Quota.PauseID && credential.Quota.PauseID != "" {
+				root["cpa_pause_restored"] = true
+			} else if !allowLocked {
+				delete(root, "cpa_pause_id")
+				delete(root, "cpa_pause_restored")
+			}
 		}
 		root["credential_tier_router"] = map[string]any{
 			"managed": true, "tier": credential.ProposedTier, "updated_at": time.Now().UTC().Format(time.RFC3339),

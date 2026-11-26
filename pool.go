@@ -353,7 +353,7 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 		planningConfig.Providers = []string{"antigravity"}
 		planningConfig.ActivePoolSize = 0
 	}
-	r.readRestPauseMarkers(ctx, files, cache)
+	r.readRestPauseMarkers(ctx, files, cache, false)
 	result, next := planPool(planningConfig, files, cache, pools, time.Now().UTC())
 	if managedOnly || hardPausedID != "" {
 		byID := make(map[string]authFile, len(files))

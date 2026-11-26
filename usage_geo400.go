@@ -57,6 +57,7 @@ func (r *runtime) prepareRestProjection(ctx context.Context, index string, statu
 	root["priority"] = -1
 	root["disabled"] = true
 	root["cpa_pause_id"] = pauseID
+	delete(root, "cpa_pause_restored")
 	reason := "geo_400"
 	switch status {
 	case 403:
@@ -83,25 +84,29 @@ func newRestPauseID() (string, error) {
 }
 
 func ownsRestDisable(root map[string]any, expected string) bool {
-	return expected != "" && root["cpa_pause_id"] == expected
+	return expected != "" && root["cpa_pause_id"] == expected && root["cpa_pause_restored"] != true
 }
 
-func (r *runtime) readRestPauseMarkers(ctx context.Context, files []authFile, cache map[string]quotaSnapshot) {
+func (r *runtime) readRestPauseMarkers(ctx context.Context, files []authFile, cache map[string]quotaSnapshot, verifyAll bool) {
 	for i := range files {
 		f := &files[i]
 		f.RestPauseMarker, f.RestPauseReadFailed = "", false
 		q := cache[f.AuthIndex]
-		if !f.Disabled || providerOf(*f) != "antigravity" || !q.NeedsUnpause || !q.ManagedRest || q.RestUntil == nil {
+		needsMarker := f.Disabled && q.NeedsUnpause && q.ManagedRest && q.RestUntil != nil
+		if providerOf(*f) != "antigravity" || !managedAuthFile(*f) || (!verifyAll && !needsMarker) {
 			continue
 		}
 		doc, err := r.host.getAuth(ctx, f.AuthIndex)
 		var root map[string]json.RawMessage
-		if err != nil || (doc.AuthIndex != "" && doc.AuthIndex != f.AuthIndex) || json.Unmarshal(doc.JSON, &root) != nil || root == nil {
+		if err != nil || (doc.AuthIndex != "" && doc.AuthIndex != f.AuthIndex) ||
+			strings.TrimSpace(doc.Name) != strings.TrimSpace(f.Name) || json.Unmarshal(doc.JSON, &root) != nil || root == nil {
 			f.RestPauseReadFailed = true
 			continue // Leave this credential and its rest untouched; service the other accounts.
 		}
 		var marker string
-		if json.Unmarshal(root["cpa_pause_id"], &marker) == nil && marker != "" && marker == q.PauseID {
+		var released bool
+		_ = json.Unmarshal(root["cpa_pause_restored"], &released)
+		if needsMarker && !released && json.Unmarshal(root["cpa_pause_id"], &marker) == nil && marker != "" && marker == q.PauseID {
 			f.RestPauseMarker = marker
 		}
 	}

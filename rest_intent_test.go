@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -163,6 +164,35 @@ func TestRestoreResumesWithoutRevertingSuccessfulAccounts(t *testing.T) {
 			assertManagedProjection(t, h, "a", false, -1)
 			assertManagedProjection(t, h, "b", false, -1)
 		})
+	}
+}
+
+func TestPartialRestoreKeepsLockIfSnapshotFileDisappears(t *testing.T) {
+	r, h := reviewRuntime(t, 2)
+	ctx := context.Background()
+	pool429Send(t, r)
+	r.host = &stickyFaultHost{reviewDiskHost: h, failSave: "b.json"}
+	if _, err := r.restorePool429(ctx); err == nil {
+		t.Fatal("expected b write failure to keep lock")
+	}
+	assertManagedProjection(t, h, "a", false, 400)
+	b, err := h.getAuth(ctx, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(h.dir, b.Name)); err != nil {
+		t.Fatal(err)
+	}
+	r = newRuntime(h)
+	if _, err := r.restorePool429(ctx); err == nil || !r.poolLocked429() || !r.state.Pool429Restoring {
+		t.Fatalf("missing snapshot credential must keep durable gate: %v", err)
+	}
+	assertManagedProjection(t, h, "a", false, 400)
+	if err := h.saveAuth(ctx, b.Name, b.JSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.restorePool429(ctx); err != nil || r.poolLocked429() {
+		t.Fatalf("full snapshot restored but gate did not clear: %v", err)
 	}
 }
 
