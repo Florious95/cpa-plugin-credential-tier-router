@@ -122,6 +122,44 @@ func TestQuota429FailedHardDisableCannotUndoLaterManualDisable(t *testing.T) {
 	assertManagedProjection(t, h, "a", true, -1)
 }
 
+type quota429StateFaultHost struct {
+	*reviewDiskHost
+	failState func()
+}
+
+func (h *quota429StateFaultHost) getAuth(ctx context.Context, index string) (authDocument, error) {
+	doc, err := h.reviewDiskHost.getAuth(ctx, index)
+	h.failState()
+	return doc, err
+}
+
+func TestQuota429FailedPermissionConsumptionDoesNotEnable(t *testing.T) {
+	r, h := reviewRuntime(t, 1)
+	ctx := context.Background()
+	if err := r.handleUsage(ctx, quota429Event(t, "a")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := h.getAuth(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := r.store
+	badPath := t.TempDir() // rename onto an existing directory must fail.
+	r.host = &quota429StateFaultHost{reviewDiskHost: h, failState: func() { r.store.path = badPath }}
+	if err := r.scheduledInspection(ctx, false); err == nil {
+		t.Fatal("expected state persistence failure after planning and before host write")
+	}
+	after, err := h.getAuth(ctx, "a")
+	if err != nil || string(after.JSON) != string(before.JSON) {
+		t.Fatalf("failed consumption changed the auth document: %v", err)
+	}
+	state, err := store.load()
+	if err != nil || !state.Quota["a"].NeedsUnpause {
+		t.Fatalf("failed consumption unexpectedly changed the durable lease: %v", err)
+	}
+	assertManagedProjection(t, h, "a", true, -1)
+}
+
 func TestQuota429BatchClearsEachSuccessfulUnpauseBeforeNextSave(t *testing.T) {
 	r, h := reviewRuntime(t, 2)
 	ctx := context.Background()
@@ -139,7 +177,7 @@ func TestQuota429BatchClearsEachSuccessfulUnpauseBeforeNextSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Quota["a"].NeedsUnpause || !state.Quota["b"].NeedsUnpause {
+	if state.Quota["a"].NeedsUnpause || state.Quota["b"].NeedsUnpause {
 		t.Fatalf("wrong per-account phase after partial batch: a=%+v b=%+v", state.Quota["a"], state.Quota["b"])
 	}
 	assertManagedProjection(t, h, "a", false, -1)
@@ -150,7 +188,7 @@ func TestQuota429BatchClearsEachSuccessfulUnpauseBeforeNextSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertManagedProjection(t, h, "a", true, -1)
-	assertManagedProjection(t, h, "b", false, -1)
+	assertManagedProjection(t, h, "b", true, -1)
 }
 
 func TestLateQuota429OnPoolOwnedDisableSurvivesRestore(t *testing.T) {

@@ -529,22 +529,22 @@ func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, r
 		if err != nil {
 			return err
 		}
-		if err := r.host.saveAuth(ctx, firstText(document.Name, file.Name), updated); err != nil {
-			return err
-		}
-		if !allowLocked && !credential.ProposedDisabled && credential.Quota.NeedsUnpause {
-			// This account was already enabled on the host. Do not leave its
-			// permission outstanding if a subsequent account write fails.
+		if !credential.ProposedDisabled && credential.Quota.NeedsUnpause {
+			// Spend the permission durably first. A failed auth write must
+			// leave the credential disabled, never leave stale enable rights.
 			if err := r.consumeUnpause(credential.AuthIndex); err != nil {
 				return err
 			}
+		}
+		if err := r.host.saveAuth(ctx, firstText(document.Name, file.Name), updated); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// Call under commitMu, immediately after a successful enable projection.
-// Keep the in-memory permission consumed even if the state write fails.
+// Call under commitMu, before applying an enable projection. On a state
+// write failure the caller must not write the credential.
 func (r *runtime) consumeUnpause(index string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -555,6 +555,8 @@ func (r *runtime) consumeUnpause(index string) error {
 	q.NeedsUnpause = false
 	r.state.Quota[index] = q
 	if err := r.store.save(r.state); err != nil {
+		q.NeedsUnpause = true
+		r.state.Quota[index] = q
 		return fmt.Errorf("persist consumed rest permission for %s: %w", index, err)
 	}
 	return nil

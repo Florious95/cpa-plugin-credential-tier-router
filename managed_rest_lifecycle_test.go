@@ -167,7 +167,7 @@ func TestManagedRestPreviewCannotGrantRecoveryWritePermission(t *testing.T) {
 	assertManagedProjection(t, h, "a", false, 400)
 }
 
-func TestManagedRestWriteFailuresReplayBothPhasesAfterRestart(t *testing.T) {
+func TestManagedRestWriteFailuresFailSafeAcrossRestart(t *testing.T) {
 	for _, expiry := range []bool{false, true} {
 		t.Run(map[bool]string{false: "clear_disable", true: "restore_priority"}[expiry], func(t *testing.T) {
 			r, h := reviewRuntime(t, 5)
@@ -198,7 +198,10 @@ func TestManagedRestWriteFailuresReplayBothPhasesAfterRestart(t *testing.T) {
 			if expiry {
 				priority = 200
 			}
-			assertManagedProjection(t, h, "a", false, priority)
+			if q.NeedsUnpause {
+				t.Fatal("failed projection left outstanding enable permission")
+			}
+			assertManagedProjection(t, h, "a", !expiry, priority)
 			stickyMembers(t, restarted, "b", "c", "d", "e")
 		})
 	}
