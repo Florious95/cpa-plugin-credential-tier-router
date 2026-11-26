@@ -217,12 +217,10 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	before := r.state.Pool429Before
 	r.mu.Unlock()
 	cfg.Providers = []string{"antigravity"}
-	if err := r.readRestPauseMarkers(ctx, files, cache); err != nil {
-		return plan{}, err
-	}
+	r.readRestPauseMarkers(ctx, files, cache)
 	var actual, planning, unowned []authFile
 	for _, file := range files {
-		if providerOf(file) != "antigravity" || !managedAuthFile(file) {
+		if providerOf(file) != "antigravity" || !managedAuthFile(file) || file.RestPauseReadFailed {
 			continue
 		}
 		actual = append(actual, file)

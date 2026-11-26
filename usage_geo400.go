@@ -75,28 +75,25 @@ func ownsRestDisable(root map[string]any, expected string) bool {
 	return expected != "" && root["cpa_pause_marker"] == expected
 }
 
-func (r *runtime) readRestPauseMarkers(ctx context.Context, files []authFile, cache map[string]quotaSnapshot) error {
+func (r *runtime) readRestPauseMarkers(ctx context.Context, files []authFile, cache map[string]quotaSnapshot) {
 	for i := range files {
 		f := &files[i]
-		f.RestPauseMarker = ""
+		f.RestPauseMarker, f.RestPauseReadFailed = "", false
 		q := cache[f.AuthIndex]
 		if !f.Disabled || providerOf(*f) != "antigravity" || !q.NeedsUnpause || !q.ManagedRest || q.RestUntil == nil {
 			continue
 		}
 		doc, err := r.host.getAuth(ctx, f.AuthIndex)
-		if err != nil {
-			return fmt.Errorf("read rest pause marker for %s: %w", f.AuthIndex, err)
-		}
 		var root map[string]json.RawMessage
-		if doc.AuthIndex != "" && doc.AuthIndex != f.AuthIndex || json.Unmarshal(doc.JSON, &root) != nil || root == nil {
-			return fmt.Errorf("invalid credential document for rest marker: %s", f.AuthIndex)
+		if err != nil || (doc.AuthIndex != "" && doc.AuthIndex != f.AuthIndex) || json.Unmarshal(doc.JSON, &root) != nil || root == nil {
+			f.RestPauseReadFailed = true
+			continue // Leave this credential and its rest untouched; service the other accounts.
 		}
 		var marker string
 		if json.Unmarshal(root["cpa_pause_marker"], &marker) == nil && marker == restPauseMarker(q.RestUntil) {
 			f.RestPauseMarker = marker
 		}
 	}
-	return nil
 }
 
 func eventRestUntil(quota quotaSnapshot, now time.Time, duration time.Duration, status int) time.Time {
@@ -109,7 +106,7 @@ func eventRestUntil(quota quotaSnapshot, now time.Time, duration time.Duration, 
 	return until
 }
 
-func (r *runtime) markGeoRest(index string, now, until time.Time) {
+func (r *runtime) markGeoRest(index string, now, until time.Time, ownsDisable bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state.Quota == nil {
@@ -118,6 +115,9 @@ func (r *runtime) markGeoRest(index string, now, until time.Time) {
 	quota := r.state.Quota[index]
 	quota.RestUntil = &until
 	quota.ManagedRest = true
+	if ownsDisable {
+		quota.NeedsUnpause = true
+	}
 	quota.ObservedAt = now
 	r.state.Quota[index] = quota
 }
@@ -203,8 +203,13 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if err != nil || projection == nil {
 		return err
 	}
-	r.markGeoRest(index, now, until)
-	persistErr := r.persistState()
+	var persistErr error
+	if q.RestUntil == nil {
+		// A new rest may record intent before the hard disable, but that
+		// grants no permission to enable. Never replace a live lease first.
+		r.markGeoRest(index, now, until, false)
+		persistErr = r.persistState()
+	}
 	// Attempt the safety disable even if state storage fails, but never admit
 	// a replacement without durable recovery intent.
 	pauseErr := r.host.saveAuth(ctx, name, projection)
@@ -213,11 +218,7 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	} else {
 		// A durable rest deadline is not permission to undo a manual disable.
 		// Grant that permission only after our hard-disable has succeeded.
-		r.mu.Lock()
-		q := r.state.Quota[index]
-		q.NeedsUnpause = true
-		r.state.Quota[index] = q
-		r.mu.Unlock()
+		r.markGeoRest(index, now, until, true)
 		if err := r.persistState(); persistErr == nil {
 			persistErr = err
 		}

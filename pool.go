@@ -177,7 +177,7 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 	byID := make(map[string]authFile, len(files))
 	for _, file := range files {
 		provider := providerOf(file)
-		if !managedAuthFile(file) || !selected[provider] {
+		if !managedAuthFile(file) || !selected[provider] || file.RestPauseReadFailed {
 			continue
 		}
 		byID[file.AuthIndex] = file
@@ -348,9 +348,7 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 		planningConfig.Providers = []string{"antigravity"}
 		planningConfig.ActivePoolSize = 0
 	}
-	if err := r.readRestPauseMarkers(ctx, files, cache); err != nil {
-		return plan{}, err
-	}
+	r.readRestPauseMarkers(ctx, files, cache)
 	result, next := planPool(planningConfig, files, cache, pools, time.Now().UTC())
 	if managedOnly || hardPausedID != "" {
 		byID := make(map[string]authFile, len(files))

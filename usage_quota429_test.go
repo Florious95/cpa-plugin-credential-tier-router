@@ -145,7 +145,13 @@ func TestQuota429FailedPermissionConsumptionDoesNotEnable(t *testing.T) {
 	}
 	store := r.store
 	badPath := t.TempDir() // rename onto an existing directory must fail.
-	r.host = &quota429StateFaultHost{reviewDiskHost: h, failState: func() { r.store.path = badPath }}
+	reads := 0
+	r.host = &quota429StateFaultHost{reviewDiskHost: h, failState: func() {
+		reads++
+		if reads == 2 { // The runtime read after marker preflight and planning.
+			r.store.path = badPath
+		}
+	}}
 	if err := r.scheduledInspection(ctx, false); err == nil {
 		t.Fatal("expected state persistence failure after planning and before host write")
 	}
@@ -158,6 +164,68 @@ func TestQuota429FailedPermissionConsumptionDoesNotEnable(t *testing.T) {
 		t.Fatalf("failed consumption unexpectedly changed the durable lease: %v", err)
 	}
 	assertManagedProjection(t, h, "a", true, -1)
+}
+
+func TestQuota429FailedRenewalKeepsPreviousDeadlineAndMarker(t *testing.T) {
+	r, h := reviewRuntime(t, 1)
+	ctx := context.Background()
+	started := time.Now().UTC()
+	r.geoNow = func() time.Time { return started }
+	if err := r.handleUsage(ctx, quota429Event(t, "a")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := h.getAuth(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.geoNow = func() time.Time { return started.Add(time.Hour) }
+	r.host = &stickyFaultHost{reviewDiskHost: h, failSave: "a.json"}
+	if err := r.handleUsage(ctx, quota429Event(t, "a")); err == nil {
+		t.Fatal("expected renewal host write to fail")
+	}
+	state, err := r.store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := state.Quota["a"]
+	after, err := h.getAuth(ctx, "a")
+	if err != nil || string(after.JSON) != string(before.JSON) || !q.NeedsUnpause || !q.RestUntil.Equal(started.Add(16*time.Hour)) {
+		t.Fatalf("failed renewal desynchronized marker and ledger: %+v / %v", q, err)
+	}
+	if err := newRuntime(h).scheduledInspection(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	assertManagedProjection(t, h, "a", false, -1)
+}
+
+type quota429CorruptMarkerHost struct{ *reviewDiskHost }
+
+func (h quota429CorruptMarkerHost) getAuth(ctx context.Context, index string) (authDocument, error) {
+	doc, err := h.reviewDiskHost.getAuth(ctx, index)
+	if index == "b" {
+		doc.JSON = json.RawMessage(`null`)
+	}
+	return doc, err
+}
+
+func TestQuota429UnreadablePeerDoesNotBlockUnpause(t *testing.T) {
+	r, h := reviewRuntime(t, 2)
+	ctx := context.Background()
+	for _, id := range []string{"a", "b"} {
+		if err := r.handleUsage(ctx, quota429Event(t, id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.host = quota429CorruptMarkerHost{h}
+	if err := r.scheduledInspection(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	assertManagedProjection(t, h, "a", false, -1)
+	assertManagedProjection(t, h, "b", true, -1)
+	state, err := r.store.load()
+	if err != nil || state.Quota["a"].NeedsUnpause || !state.Quota["b"].NeedsUnpause {
+		t.Fatal("invalid peer should not consume its marker or block the healthy peer")
+	}
 }
 
 func TestQuota429BatchClearsEachSuccessfulUnpauseBeforeNextSave(t *testing.T) {
