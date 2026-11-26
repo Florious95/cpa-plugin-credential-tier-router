@@ -64,8 +64,46 @@ func TestQuota429NullAuthDocumentDoesNotPanic(t *testing.T) {
 	if err := r.handleUsage(context.Background(), quota429Event(t)); err == nil {
 		t.Fatal("expected a controlled projection error")
 	}
+	assertNoQuotaRestIntent(t, r)
 	if string(h.document) != "null" || r.poolLocked429() {
 		t.Fatal("malformed document was rewritten or quota event tripped the lock")
+	}
+}
+
+func TestQuota429ValidatesLiveCredentialBeforeRest(t *testing.T) {
+	for _, tc := range []struct {
+		name, document, filename, identity string
+		wantError                          bool
+	}{
+		{"manual disable", `{"type":"antigravity","disabled":true}`, "fixture.json", "fixture", false},
+		{"manual disable with tier marker", `{"type":"antigravity","disabled":true,"credential_tier_router":{"managed":true,"tier":"paused","reason":"quota_exhausted"}}`, "fixture.json", "fixture", false},
+		{"failed get", `{}`, "fixture.json", "not-fixture", true},
+		{"unsafe filename", `{}`, "nested/fixture.json", "fixture", true},
+		{"wrong provider", `{"type":"codex"}`, "fixture.json", "fixture", true},
+		{"ambiguous disabled", `{"disabled":"true"}`, "fixture.json", "fixture", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, h := newHTTP403HubRuntime(t)
+			h.document, h.file.Name, h.file.AuthIndex = json.RawMessage(tc.document), tc.filename, tc.identity
+			if err := r.handleUsage(context.Background(), quota429Event(t)); (err != nil) != tc.wantError {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertNoQuotaRestIntent(t, r)
+			if string(h.document) != tc.document {
+				t.Fatal("credential document was overwritten")
+			}
+		})
+	}
+}
+
+func assertNoQuotaRestIntent(t *testing.T, r *runtime) {
+	t.Helper()
+	s, err := r.store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.state.Quota["fixture"].ManagedRest || s.Quota["fixture"].ManagedRest || r.poolLocked429() {
+		t.Fatal("invalid credential must not create rest ownership or lock the pool")
 	}
 }
 

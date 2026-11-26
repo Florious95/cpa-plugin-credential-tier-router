@@ -16,26 +16,45 @@ func isAntigravityGeo400(event usageEvent) bool {
 	return strings.Contains(body, "failed_precondition") && strings.Contains(body, "user location is not supported for the api use.")
 }
 
-func (r *runtime) pauseGeoCredential(ctx context.Context, event usageEvent) error {
-	index := firstText(event.AuthIndex, event.AuthID)
-	if index == "" {
-		return fmt.Errorf("usage event has no credential identity")
-	}
+// prepareRestProjection runs under commitMu and must succeed before a
+// ManagedRest lease is written. A nil payload means an external disable.
+func (r *runtime) prepareRestProjection(ctx context.Context, index string, status int, alreadyManaged bool) (string, []byte, error) {
 	document, err := r.host.getAuth(ctx, index)
 	if err != nil {
-		return fmt.Errorf("get geo-400 credential %s: %w", index, err)
+		return "", nil, fmt.Errorf("get credential %s for rest: %w", index, err)
+	}
+	name := strings.TrimSpace(document.Name)
+	if !managedAuthFile(authFile{Name: name, Provider: "antigravity"}) || (document.AuthIndex != "" && document.AuthIndex != index) {
+		return "", nil, fmt.Errorf("invalid rest credential identity or filename for %s", index)
 	}
 	var root map[string]any
 	if err := json.Unmarshal(document.JSON, &root); err != nil {
-		return fmt.Errorf("decode geo-400 credential %s: %w", index, err)
+		return "", nil, fmt.Errorf("decode credential %s for rest: %w", index, err)
 	}
 	if root == nil {
-		return fmt.Errorf("credential %s document is not a JSON object", index)
+		return "", nil, fmt.Errorf("credential %s document is not a JSON object", index)
+	}
+	if kind, ok := root["type"]; ok && kind != "antigravity" {
+		return "", nil, fmt.Errorf("credential %s is not Antigravity", index)
+	}
+	if flag, present := root["disabled"]; present {
+		disabled, ok := flag.(bool)
+		if !ok {
+			return "", nil, fmt.Errorf("credential %s disabled field is not boolean", index)
+		}
+		if disabled {
+			marker, _ := root["credential_tier_router"].(map[string]any)
+			why, _ := marker["reason"].(string)
+			if !alreadyManaged || marker["managed"] != true || marker["tier"] != string(tierPaused) ||
+				(why != "geo_400" && why != "http_403" && why != "quota_exhausted") {
+				return "", nil, nil
+			}
+		}
 	}
 	root["priority"] = -1
 	root["disabled"] = true
 	reason := "geo_400"
-	switch event.Failure.StatusCode {
+	switch status {
 	case 403:
 		reason = "http_403"
 	case 429:
@@ -46,14 +65,7 @@ func (r *runtime) pauseGeoCredential(ctx context.Context, event usageEvent) erro
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	updated, err := json.Marshal(root)
-	if err != nil {
-		return err
-	}
-	name := strings.TrimSpace(document.Name)
-	if name == "" {
-		return fmt.Errorf("geo-400 credential %s has no auth filename", index)
-	}
-	return r.host.saveAuth(ctx, name, updated)
+	return name, updated, err
 }
 
 func (r *runtime) markGeoRest(event usageEvent, now time.Time, duration time.Duration) time.Time {
@@ -138,10 +150,15 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	// A late event must not grant auto-enable ownership to a credential that
 	// was externally disabled or absent from the full-pool lock snapshot.
 	previous, known := r.state.Pool429Before[index]
-	external := r.state.PoolLocked429 && (!known || (previous.Disabled && !r.state.Quota[index].ManagedRest))
+	alreadyManaged := r.state.Quota[index].ManagedRest
+	external := r.state.PoolLocked429 && (!known || (previous.Disabled && !alreadyManaged))
 	r.mu.Unlock()
-	if event.Failure.StatusCode == 429 && external {
+	if external {
 		return nil
+	}
+	name, projection, err := r.prepareRestProjection(ctx, index, event.Failure.StatusCode, alreadyManaged)
+	if err != nil || projection == nil {
+		return err
 	}
 	if restDuration == 0 {
 		restDuration = time.Duration(cfg.Geo400RestHours) * time.Hour
@@ -150,7 +167,7 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	persistErr := r.persistState()
 	// Attempt the safety disable even if state storage fails, but never admit
 	// a replacement without durable recovery intent.
-	pauseErr := r.pauseGeoCredential(ctx, event)
+	pauseErr := r.host.saveAuth(ctx, name, projection)
 	if pauseErr != nil {
 		r.recordHistory(trigger, 0, 1, "即时熔断失败："+safeError(pauseErr))
 	} else {
