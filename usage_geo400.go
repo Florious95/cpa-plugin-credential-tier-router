@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -17,34 +19,39 @@ func isAntigravityGeo400(event usageEvent) bool {
 	return strings.Contains(body, "failed_precondition") && strings.Contains(body, "user location is not supported for the api use.")
 }
 
+type restProjection struct {
+	name             string
+	original, paused json.RawMessage
+}
+
 // prepareRestProjection runs under commitMu and must succeed before a
-// ManagedRest lease is written. A nil payload means an external disable.
-func (r *runtime) prepareRestProjection(ctx context.Context, index string, status int, priorID string, poolOwnsDisable bool, pauseID string) (string, []byte, error) {
+// ManagedRest lease is written. A nil result means an external disable.
+func (r *runtime) prepareRestProjection(ctx context.Context, index string, status int, priorID string, poolOwnsDisable bool, pauseID string) (*restProjection, error) {
 	document, err := r.host.getAuth(ctx, index)
 	if err != nil {
-		return "", nil, fmt.Errorf("get credential %s for rest: %w", index, err)
+		return nil, fmt.Errorf("get credential %s for rest: %w", index, err)
 	}
 	name := strings.TrimSpace(document.Name)
 	if !managedAuthFile(authFile{Name: name, Provider: "antigravity"}) || (document.AuthIndex != "" && document.AuthIndex != index) {
-		return "", nil, fmt.Errorf("invalid rest credential identity or filename for %s", index)
+		return nil, fmt.Errorf("invalid rest credential identity or filename for %s", index)
 	}
 	var root map[string]any
 	if err := json.Unmarshal(document.JSON, &root); err != nil {
-		return "", nil, fmt.Errorf("decode credential %s for rest: %w", index, err)
+		return nil, fmt.Errorf("decode credential %s for rest: %w", index, err)
 	}
 	if root == nil {
-		return "", nil, fmt.Errorf("credential %s document is not a JSON object", index)
+		return nil, fmt.Errorf("credential %s document is not a JSON object", index)
 	}
 	if kind, ok := root["type"]; ok && kind != "antigravity" {
-		return "", nil, fmt.Errorf("credential %s is not Antigravity", index)
+		return nil, fmt.Errorf("credential %s is not Antigravity", index)
 	}
 	if flag, present := root["disabled"]; present {
 		disabled, ok := flag.(bool)
 		if !ok {
-			return "", nil, fmt.Errorf("credential %s disabled field is not boolean", index)
+			return nil, fmt.Errorf("credential %s disabled field is not boolean", index)
 		}
 		if disabled && !ownsRestDisable(root, priorID) && (priorID != "" || !poolOwnsDisable) {
-			return "", nil, nil
+			return nil, nil
 		}
 	}
 	root["priority"] = -1
@@ -62,7 +69,7 @@ func (r *runtime) prepareRestProjection(ctx context.Context, index string, statu
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	updated, err := json.Marshal(root)
-	return name, updated, err
+	return &restProjection{name: name, original: bytes.Clone(document.JSON), paused: updated}, err
 }
 
 func newRestPauseID() (string, error) {
@@ -110,20 +117,57 @@ func eventRestUntil(quota quotaSnapshot, now time.Time, duration time.Duration, 
 	return until
 }
 
-func (r *runtime) markGeoRest(index string, now, until time.Time, pauseID string) {
+func (r *runtime) commitGeoRest(index string, now, until time.Time, pauseID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.state.Quota == nil {
-		r.state.Quota = map[string]quotaSnapshot{}
-	}
-	quota := r.state.Quota[index]
-	quota.RestUntil = &until
-	quota.ManagedRest = true
-	if pauseID != "" {
-		quota.NeedsUnpause, quota.PauseID = true, pauseID
-	}
+	old := r.state.Quota
+	r.state.Quota = cloneQuota(old)
+	quota := old[index]
+	quota.RestUntil, quota.ManagedRest, quota.NeedsUnpause, quota.PauseID = &until, true, true, pauseID
 	quota.ObservedAt = now
 	r.state.Quota[index] = quota
+	if err := r.store.save(r.state); err != nil {
+		r.state.Quota = old
+		return fmt.Errorf("persist managed rest for %s: %w", index, err)
+	}
+	return nil
+}
+
+func (r *runtime) rollbackRestProjection(ctx context.Context, index string, projection *restProjection) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	current, err := r.host.getAuth(ctx, index)
+	if err != nil {
+		return fmt.Errorf("read credential %s for rest rollback: %w", index, err)
+	}
+	// Do not knowingly overwrite a concurrent manual edit or OAuth renewal.
+	// The host exposes no compare-and-swap spanning this read and save.
+	if strings.TrimSpace(current.Name) != projection.name || (current.AuthIndex != "" && current.AuthIndex != index) ||
+		!sameRestDocument(current.JSON, projection.paused) {
+		return fmt.Errorf("credential %s changed; rest rollback refused", index)
+	}
+	if err := r.host.saveAuth(ctx, projection.name, projection.original); err != nil {
+		return fmt.Errorf("restore credential %s after rest ledger failure: %w", index, err)
+	}
+	return nil
+}
+
+func sameRestDocument(a, b []byte) bool {
+	canonical := func(raw []byte) []byte {
+		if !json.Valid(raw) {
+			return nil
+		}
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var obj map[string]any
+		if err := dec.Decode(&obj); err != nil || obj == nil {
+			return nil
+		}
+		canonical, _ := json.Marshal(obj)
+		return canonical
+	}
+	x := canonical(a)
+	return x != nil && bytes.Equal(x, canonical(b))
 }
 
 func (r *runtime) markLatestGeoPaused(event usageEvent, until time.Time) {
@@ -182,6 +226,9 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	// Probes never hold this fence: a slow upstream cannot delay the breaker.
 	r.commitMu.Lock()
 	defer r.commitMu.Unlock()
+	if r.loadErr != nil {
+		return fmt.Errorf("load state: %w", r.loadErr)
+	}
 	r.mu.Lock()
 	cfg := normalizeSettings(r.state.Settings)
 	// A late event must not grant auto-enable ownership to a credential that
@@ -207,47 +254,26 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	name, projection, err := r.prepareRestProjection(ctx, index, event.Failure.StatusCode, priorID, poolOwnsDisable, pauseID)
+	projection, err := r.prepareRestProjection(ctx, index, event.Failure.StatusCode, priorID, poolOwnsDisable, pauseID)
 	if err != nil || projection == nil {
 		return err
 	}
-	var persistErr error
-	if q.RestUntil == nil {
-		// A new rest may record intent before the hard disable, but that
-		// grants no permission to enable. Never replace a live lease first.
-		r.markGeoRest(index, now, until, "")
-		persistErr = r.persistState()
+	if err := r.host.saveAuth(ctx, projection.name, projection.paused); err != nil {
+		r.recordHistory(trigger, 0, 1, "即时熔断失败："+safeError(err))
+		return errors.Join(err, r.persistState())
 	}
-	// Attempt the safety disable even if state storage fails, but never admit
-	// a replacement without durable recovery intent.
-	pauseErr := r.host.saveAuth(ctx, name, projection)
-	if pauseErr != nil {
-		r.recordHistory(trigger, 0, 1, "即时熔断失败："+safeError(pauseErr))
-	} else {
-		// A durable rest deadline is not permission to undo a manual disable.
-		// Grant that permission only after our hard-disable has succeeded.
-		r.markGeoRest(index, now, until, pauseID)
-		if err := r.persistState(); persistErr == nil {
-			persistErr = err
-		}
-		r.markLatestGeoPaused(event, until)
-		r.recordHistory(trigger, 1, 0, fmt.Sprintf("已熔断并强制休眠至 %s；下次巡检解除禁用但保持暂停", until.Format(time.RFC3339)))
+	if err := r.commitGeoRest(index, now, until, pauseID); err != nil {
+		return errors.Join(err, r.rollbackRestProjection(ctx, index, projection))
 	}
-	if cfg.ActivePoolSize > 0 && pauseErr == nil && persistErr == nil {
-		// This event must leave its own credential hard-disabled. Only a later
-		// reconciliation may release disabled while keeping the rest priority.
+	r.markLatestGeoPaused(event, until)
+	r.recordHistory(trigger, 1, 0, fmt.Sprintf("已熔断并强制休眠至 %s；下次巡检解除禁用但保持暂停", until.Format(time.RFC3339)))
+	if cfg.ActivePoolSize > 0 {
+		// Leave this event's own credential hard-disabled until reconciliation.
 		if _, err := r.commitPoolWithPause(ctx, nil, true, trigger+"补位", index); err != nil {
 			r.recordHistory(trigger, 0, 1, "活跃池补位失败："+safeError(err))
 		}
 	}
-	saveErr := r.persistState()
-	if persistErr != nil {
-		return persistErr
-	}
-	if pauseErr != nil {
-		return pauseErr
-	}
-	return saveErr
+	return r.persistState()
 }
 
 // Serialize snapshot capture, JSON encoding and rename with all mutations.

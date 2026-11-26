@@ -169,6 +169,70 @@ func TestQuota429FailedPermissionConsumptionDoesNotEnable(t *testing.T) {
 	assertManagedProjection(t, h, "a", true, -1)
 }
 
+type quota429PostWriteFaultHost struct {
+	*reviewDiskHost
+	afterFirstSave func()
+	writes         int
+}
+
+func (h *quota429PostWriteFaultHost) saveAuth(ctx context.Context, name string, raw json.RawMessage) error {
+	if err := h.reviewDiskHost.saveAuth(ctx, name, raw); err != nil {
+		return err
+	}
+	h.writes++
+	if h.writes == 1 {
+		h.afterFirstSave()
+	}
+	return nil
+}
+
+func TestQuota429LedgerFailureRollsBackInitialAndRenewedPause(t *testing.T) {
+	for _, renewal := range []bool{false, true} {
+		t.Run(map[bool]string{false: "initial", true: "renewal"}[renewal], func(t *testing.T) {
+			r, h := reviewRuntime(t, 1)
+			ctx := context.Background()
+			now := time.Now().UTC()
+			r.geoNow = func() time.Time { return now }
+			if renewal {
+				if err := r.handleUsage(ctx, quota429Event(t, "a")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			store := r.store
+			state, err := store.load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := h.getAuth(ctx, "a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous := state.Quota["a"]
+			now = now.Add(time.Hour)
+			badPath := t.TempDir()
+			fault := &quota429PostWriteFaultHost{reviewDiskHost: h, afterFirstSave: func() { r.store.path = badPath }}
+			r.host = fault
+			if err := r.handleUsage(ctx, quota429Event(t, "a")); err == nil {
+				t.Fatal("expected failure to persist lease after writing new UUID")
+			}
+			after, err := h.getAuth(ctx, "a")
+			if err != nil || fault.writes != 2 || string(before.JSON) != string(after.JSON) {
+				t.Fatalf("rollback did not restore the original document (writes=%d): %v", fault.writes, err)
+			}
+			state, err = store.load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual := state.Quota["a"]
+			if actual.PauseID != previous.PauseID || actual.NeedsUnpause != previous.NeedsUnpause ||
+				(actual.RestUntil == nil) != (previous.RestUntil == nil) ||
+				(actual.RestUntil != nil && !actual.RestUntil.Equal(*previous.RestUntil)) || r.state.Quota["a"].PauseID != previous.PauseID {
+				t.Fatalf("failed commit changed the persisted or runtime lease: previous=%+v actual=%+v", previous, actual)
+			}
+		})
+	}
+}
+
 func TestQuota429FailedRenewalKeepsPreviousDeadlineAndMarker(t *testing.T) {
 	r, h := reviewRuntime(t, 1)
 	ctx := context.Background()
