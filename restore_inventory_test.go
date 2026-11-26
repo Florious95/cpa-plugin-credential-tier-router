@@ -48,9 +48,16 @@ func TestRestoreScansPhysicalDirectoryBeforeWatcherSeesNewAG(t *testing.T) {
 	files := []authFile{{Name: "approved.json", Path: approved, AuthIndex: "approved", Provider: "antigravity"}}
 	before := map[string]pool429Policy{"approved": {}}
 	allowed := map[string]bool{"approved": true}
-	write(late, `{"type":"antigravity","disabled":false}`)
-	if err := verifyRestoreDisk(files, before, allowed); err == nil {
-		t.Fatal("physical AG credential absent from the runtime inventory escaped the gate")
+	for _, body := range []string{
+		`{"type":"antigravity","disabled":false}`,
+		`{"provider":"antigravity","disabled":false}`,
+		`{"type":"antigravity","provider":"codex","disabled":false}`,
+		`{"type":"codex","provider":"antigravity","disabled":false}`,
+	} {
+		write(late, body)
+		if err := verifyRestoreDisk(files, before, allowed); err == nil {
+			t.Fatalf("physical AG credential absent from runtime inventory escaped the gate: %s", body)
+		}
 	}
 	write(late, `{"type":"antigravity","disabled":true}`)
 	if err := verifyRestoreDisk(files, before, allowed); err != nil {

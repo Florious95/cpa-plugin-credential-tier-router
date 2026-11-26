@@ -87,7 +87,8 @@ func verifyRestoreDisk(files []authFile, before map[string]pool429Policy, allowe
 			if err != nil || json.Unmarshal(raw, &file) != nil || file == nil {
 				return fmt.Errorf("unreadable physical credential; pool remains locked")
 			}
-			if providerOf(*file) == "antigravity" && !file.Disabled && !allowedPaths[path] {
+			isAG := strings.EqualFold(strings.TrimSpace(file.Type), "antigravity") || strings.EqualFold(strings.TrimSpace(file.Provider), "antigravity")
+			if isAG && !file.Disabled && !allowedPaths[path] {
 				return fmt.Errorf("enabled AG file was not restored; pool remains locked")
 			}
 			delete(requiredPaths, path)
