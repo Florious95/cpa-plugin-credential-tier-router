@@ -82,8 +82,8 @@ func TestManagedRestExactExpiryAndStaleZeroCannotRearm(t *testing.T) {
 		for _, offset := range []time.Duration{-time.Nanosecond, 0, time.Nanosecond} {
 			for _, remaining := range []*int{nil, ptrInt(0), ptrInt(75)} {
 				cfg := defaultSettings()
-				cache := map[string]quotaSnapshot{"a": {Status: quotaReady, Remaining: remaining, RestUntil: &deadline, ManagedRest: true, NeedsUnpause: disabled, ObservedAt: deadline.Add(-time.Hour)}}
-				result, _ := planPool(cfg, []authFile{{AuthIndex: "a", Provider: "antigravity", Name: "a.json", Priority: -1, Disabled: disabled, RestPauseMarker: restPauseMarker(&deadline)}}, cache, map[string]activePoolState{"antigravity": {}}, deadline.Add(offset))
+				cache := map[string]quotaSnapshot{"a": {Status: quotaReady, Remaining: remaining, RestUntil: &deadline, ManagedRest: true, NeedsUnpause: disabled, PauseID: fixturePauseID, ObservedAt: deadline.Add(-time.Hour)}}
+				result, _ := planPool(cfg, []authFile{{AuthIndex: "a", Provider: "antigravity", Name: "a.json", Priority: -1, Disabled: disabled, RestPauseMarker: fixturePauseID}}, cache, map[string]activePoolState{"antigravity": {}}, deadline.Add(offset))
 				c := result.Credentials[0]
 				if c.ProposedDisabled {
 					t.Fatalf("managed rest still disabled: %+v", c)
@@ -116,9 +116,9 @@ func TestManagedRestRecoveryIsScopedEvenWithAutomationOff(t *testing.T) {
 	r.state.Settings.AutoApply = false
 	// No bootstrap has occurred. Only a is owned; b is externally disabled.
 	until := time.Now().Add(time.Hour)
-	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "priority": -1, "cpa_pause_marker": restPauseMarker(&until)})
+	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "priority": -1, "cpa_pause_id": fixturePauseID})
 	stickySetAuth(t, h, "b", map[string]any{"disabled": true, "priority": -1})
-	r.state.Quota["a"] = quotaSnapshot{RestUntil: &until, ManagedRest: true, NeedsUnpause: true, Status: quotaUnknown}
+	r.state.Quota["a"] = quotaSnapshot{RestUntil: &until, ManagedRest: true, NeedsUnpause: true, PauseID: fixturePauseID, Status: quotaUnknown}
 	r.state.Quota["b"] = quotaSnapshot{RestUntil: &until, ManagedRest: false, Status: quotaUnknown}
 	// Recovery ownership is serviced even after the provider is deselected.
 	r.state.Settings.Providers = []string{"codex"}

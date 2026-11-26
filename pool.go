@@ -187,10 +187,10 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 		restExpired := managedRest && !quota.RestUntil.After(now)
 		// disabled breaks CPA session affinity once; a managed rest is thereafter
 		// enforced by priority alone. Never enable an externally disabled file.
-		ownsDisable := managedRest && quota.NeedsUnpause && file.RestPauseMarker != "" && file.RestPauseMarker == restPauseMarker(quota.RestUntil)
+		ownsDisable := managedRest && quota.NeedsUnpause && file.RestPauseMarker != "" && file.RestPauseMarker == quota.PauseID
 		effectiveDisabled := file.Disabled && !ownsDisable
 		if effectiveDisabled {
-			quota.NeedsUnpause = false // A replaced or externally disabled file cannot inherit ownership.
+			quota.NeedsUnpause, quota.PauseID = false, "" // A replaced or externally disabled file cannot inherit ownership.
 		}
 		current := tierFromPriority(file.Priority, effectiveDisabled)
 		if restExpired && !effectiveDisabled && current == tierPaused {
@@ -220,7 +220,7 @@ func planPool(cfg settings, files []authFile, cache map[string]quotaSnapshot, po
 			// Otherwise a crash between intent and projection strands this file
 			// as an apparently external disable on restart.
 			quota.RestUntil, quota.ManagedRest = previousRest, true
-			quota.NeedsUnpause = cache[file.AuthIndex].NeedsUnpause
+			quota.NeedsUnpause, quota.PauseID = cache[file.AuthIndex].NeedsUnpause, cache[file.AuthIndex].PauseID
 		}
 		cache[file.AuthIndex] = quota
 		credentials = append(credentials, credentialState{
@@ -264,7 +264,7 @@ func finishManagedRestProjection(cache map[string]quotaSnapshot, result plan) {
 		if c.ProposedDisabled || (c.Disabled && !c.Changed) || !q.ManagedRest || q.RestUntil == nil {
 			continue
 		}
-		q.NeedsUnpause = false
+		q.NeedsUnpause, q.PauseID = false, ""
 		if !c.Unavailable && c.ProposedTier != tierPaused && !q.RestUntil.After(result.GeneratedAt) {
 			q.RestUntil, q.ManagedRest = nil, false
 		}
@@ -325,7 +325,7 @@ func (r *runtime) commitPoolTransition(ctx context.Context, observations map[str
 		// A geo rest committed while probing is newer than this observation.
 		// Keep even an expired deadline until planPool resolves its ownership.
 		if previous := cache[id]; previous.RestUntil != nil {
-			observation.RestUntil, observation.ManagedRest, observation.NeedsUnpause = previous.RestUntil, previous.ManagedRest, previous.NeedsUnpause
+			observation.RestUntil, observation.ManagedRest, observation.NeedsUnpause, observation.PauseID = previous.RestUntil, previous.ManagedRest, previous.NeedsUnpause, previous.PauseID
 		}
 		cache[id] = observation
 	}

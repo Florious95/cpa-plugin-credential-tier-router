@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"testing"
 	"time"
 )
+
+const fixturePauseID = "ad8184ed-610d-4bea-869f-2d16325e801b"
 
 const fixtureQuota429 = `{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA_EXHAUSTED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"9792s"}]}}`
 
@@ -286,15 +289,49 @@ func TestLateQuota429OnPoolOwnedDisableSurvivesRestore(t *testing.T) {
 	}
 }
 
+func TestQuota429NewPauseIDEvenWhenDeadlineIsUnchanged(t *testing.T) {
+	r, h := reviewRuntime(t, 1)
+	ctx := context.Background()
+	started := time.Now().UTC()
+	longDeadline := started.Add(48 * time.Hour)
+	r.geoNow = func() time.Time { return started }
+	r.state.Quota["a"] = quotaSnapshot{ManagedRest: true, RestUntil: &longDeadline}
+	if err := r.handleUsage(ctx, quota429Event(t, "a")); err != nil {
+		t.Fatal(err)
+	}
+	first := r.state.Quota["a"]
+	oldDoc, err := h.getAuth(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.handleUsage(ctx, quota429Event(t, "a")); err != nil {
+		t.Fatal(err)
+	}
+	state, err := r.store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := state.Quota["a"]
+	v4 := regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$`)
+	if !first.RestUntil.Equal(longDeadline) || !second.RestUntil.Equal(longDeadline) || first.PauseID == second.PauseID || !v4.MatchString(first.PauseID) || !v4.MatchString(second.PauseID) {
+		t.Fatalf("two same-deadline pauses must have distinct UUIDv4 leases: %+v / %+v", first, second)
+	}
+	if err := h.saveAuth(ctx, oldDoc.Name, oldDoc.JSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := newRuntime(h).scheduledInspection(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	assertManagedProjection(t, h, "a", true, -1)
+}
+
 func TestQuota429DoesNotEnableReplacementWithoutOwnershipMarker(t *testing.T) {
 	r, h := reviewRuntime(t, 1)
 	ctx := context.Background()
 	if err := r.handleUsage(ctx, quota429Event(t, "a")); err != nil {
 		t.Fatal(err)
 	}
-	q := r.state.Quota["a"]
-	oldDeadline := q.RestUntil.Add(-time.Nanosecond)
-	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "cpa_pause_marker": restPauseMarker(&oldDeadline)})
+	stickySetAuth(t, h, "a", map[string]any{"disabled": true, "cpa_pause_id": fixturePauseID})
 	if err := r.scheduledInspection(ctx, false); err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +358,7 @@ func TestRestoreNeverEnablesStaleManagedRestMarkerEvenWithPreviouslyEnabledSnaps
 	if err := json.Unmarshal(h.docs[id], &doc); err != nil {
 		t.Fatal(err)
 	}
-	delete(doc, "cpa_pause_marker")
+	delete(doc, "cpa_pause_id")
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
@@ -366,7 +403,7 @@ func TestRestoreRegrantsRestOnlyAfterRollingBackSuccessfulUnpause(t *testing.T) 
 		t.Fatal("rollback did not leave credentials disabled")
 	}
 	var rollbackDoc map[string]any
-	if err := json.Unmarshal(h.docs[a], &rollbackDoc); err != nil || !ownsRestDisable(rollbackDoc, restPauseMarker(state.Quota[a].RestUntil)) {
+	if err := json.Unmarshal(h.docs[a], &rollbackDoc); err != nil || !ownsRestDisable(rollbackDoc, state.Quota[a].PauseID) {
 		t.Fatal("successfully rolled-back credential lost its pause ownership marker")
 	}
 	delete(h.fail, b+".json")

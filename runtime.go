@@ -423,6 +423,7 @@ func failedQuota(previous quotaSnapshot, probeErr error, threshold int, now time
 		RestUntil:    previous.RestUntil,
 		ManagedRest:  previous.ManagedRest,
 		NeedsUnpause: previous.NeedsUnpause,
+		PauseID:      previous.PauseID,
 	}
 }
 
@@ -539,7 +540,7 @@ func (r *runtime) applyPlanWithPoolLock(ctx context.Context, files []authFile, r
 		// hard-disables a managed geo rest; inspections retain priority=-1.
 		root["disabled"] = credential.ProposedDisabled
 		if !credential.ProposedDisabled {
-			delete(root, "cpa_pause_marker")
+			delete(root, "cpa_pause_id")
 		}
 		root["credential_tier_router"] = map[string]any{
 			"managed": true, "tier": credential.ProposedTier, "updated_at": time.Now().UTC().Format(time.RFC3339),
@@ -574,10 +575,11 @@ func (r *runtime) consumeUnpause(index string) error {
 	if !q.NeedsUnpause {
 		return nil
 	}
-	q.NeedsUnpause = false
+	priorID := q.PauseID
+	q.NeedsUnpause, q.PauseID = false, ""
 	r.state.Quota[index] = q
 	if err := r.store.save(r.state); err != nil {
-		q.NeedsUnpause = true
+		q.NeedsUnpause, q.PauseID = true, priorID
 		r.state.Quota[index] = q
 		return fmt.Errorf("persist consumed rest permission for %s: %w", index, err)
 	}

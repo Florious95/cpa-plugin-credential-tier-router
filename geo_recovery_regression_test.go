@@ -36,7 +36,7 @@ func TestGeo400ManagedRestRecoveryAfterThreeHours(t *testing.T) {
 			authIndex: {
 				AuthIndex: authIndex,
 				Name:      filename,
-				JSON:      json.RawMessage(`{"email":"trentboultjfjf75@gmail.com","priority":-1,"disabled":true,"cpa_pause_marker":"` + restPauseMarker(&restUntil) + `"}`),
+				JSON:      json.RawMessage(`{"email":"trentboultjfjf75@gmail.com","priority":-1,"disabled":true,"cpa_pause_id":"` + fixturePauseID + `"}`),
 			},
 		},
 	}
@@ -50,6 +50,7 @@ func TestGeo400ManagedRestRecoveryAfterThreeHours(t *testing.T) {
 			RestUntil:    &restUntil,
 			ManagedRest:  true,
 			NeedsUnpause: true,
+			PauseID:      fixturePauseID,
 			ObservedAt:   startedAt,
 		},
 	}

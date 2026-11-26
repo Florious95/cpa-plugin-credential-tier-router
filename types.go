@@ -66,6 +66,7 @@ type quotaSnapshot struct {
 	RestUntil    *time.Time  `json:"rest_until,omitempty"`
 	ManagedRest  bool        `json:"managed_rest,omitempty"`
 	NeedsUnpause bool        `json:"needs_unpause,omitempty"`
+	PauseID      string      `json:"pause_id,omitempty"`
 	ObservedAt   time.Time   `json:"observed_at"`
 	Status       quotaStatus `json:"status"`
 	FailCount    int         `json:"fail_count,omitempty"`

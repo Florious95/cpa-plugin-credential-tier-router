@@ -99,7 +99,7 @@ func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[strin
 				if initial {
 					previous = pool429Policy{Disabled: file.Disabled, Priority: file.Priority}
 				} else if q, exists := r.state.Quota[file.AuthIndex]; exists {
-					q.ManagedRest, q.NeedsUnpause = false, false // A new import cannot inherit old auto-enable ownership.
+					q.ManagedRest, q.NeedsUnpause, q.PauseID = false, false, "" // A new import cannot inherit old auto-enable ownership.
 					r.state.Quota[file.AuthIndex] = q
 				}
 				r.state.Pool429Before[file.AuthIndex] = previous // New arrivals need separate operator enablement.
@@ -121,7 +121,7 @@ func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[strin
 			continue
 		}
 		document, err := r.host.getAuth(ctx, file.AuthIndex)
-		regrant := false
+		var rollbackID string
 		if err == nil {
 			var root map[string]any
 			if err = json.Unmarshal(document.JSON, &root); err == nil && root == nil {
@@ -131,20 +131,18 @@ func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[strin
 				// CPA may clear runtime cooldowns on hard-disable; this host API
 				// exposes no cooldown-preserving policy patch or batch transaction.
 				_, rolledBack := restoreRollback[file.AuthIndex]
-				regrant = rolledBack && root["disabled"] == false
-				if regrant {
-					r.mu.Lock()
-					marker := restPauseMarker(r.state.Quota[file.AuthIndex].RestUntil)
-					r.mu.Unlock()
-					regrant = marker != ""
-					if regrant {
-						root["cpa_pause_marker"] = marker
+				if rolledBack && root["disabled"] == false {
+					rollbackID, err = newRestPauseID()
+					if err == nil {
+						root["cpa_pause_id"] = rollbackID
 					}
 				}
 				root["disabled"], root["priority"] = true, -1
 				var updated []byte
-				if updated, err = json.Marshal(root); err == nil {
-					err = r.host.saveAuth(ctx, firstText(document.Name, file.Name), updated)
+				if err == nil {
+					if updated, err = json.Marshal(root); err == nil {
+						err = r.host.saveAuth(ctx, firstText(document.Name, file.Name), updated)
+					}
 				}
 			}
 		}
@@ -153,24 +151,24 @@ func (r *runtime) projectPoolLock(ctx context.Context, restoreRollback map[strin
 			continue
 		}
 		changed++
-		if regrant {
-			failures = append(failures, r.regrantRestUnpause(file.AuthIndex))
+		if rollbackID != "" {
+			failures = append(failures, r.regrantRestUnpause(file.AuthIndex, rollbackID))
 		}
 	}
 	return changed, errors.Join(failures...)
 }
 
-func (r *runtime) regrantRestUnpause(index string) error {
+func (r *runtime) regrantRestUnpause(index, pauseID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	q := r.state.Quota[index]
 	if !q.ManagedRest || q.RestUntil == nil || q.NeedsUnpause {
 		return nil
 	}
-	q.NeedsUnpause = true
+	q.NeedsUnpause, q.PauseID = true, pauseID
 	r.state.Quota[index] = q
 	if err := r.store.save(r.state); err != nil {
-		q.NeedsUnpause = false
+		q.NeedsUnpause, q.PauseID = false, ""
 		r.state.Quota[index] = q
 		return fmt.Errorf("persist rollback rest permission for %s: %w", index, err)
 	}
@@ -226,7 +224,7 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 		actual = append(actual, file)
 		previous, exists := before[file.AuthIndex]
 		q := cache[file.AuthIndex]
-		owned := q.ManagedRest && q.NeedsUnpause && file.RestPauseMarker != "" && file.RestPauseMarker == restPauseMarker(q.RestUntil)
+		owned := q.ManagedRest && q.NeedsUnpause && file.RestPauseMarker != "" && file.RestPauseMarker == q.PauseID
 		if !exists || (previous.Disabled && !owned) || (file.Disabled && q.NeedsUnpause && !owned) {
 			unowned = append(unowned, file)
 			continue // Never admit a late import or an external disable into worker planning.
@@ -237,7 +235,7 @@ func (r *runtime) restorePool429(ctx context.Context) (plan, error) {
 	result, next := planPool(cfg, planning, cache, pools, time.Now().UTC())
 	for _, file := range unowned {
 		q := cache[file.AuthIndex]
-		q.ManagedRest, q.NeedsUnpause = false, false
+		q.ManagedRest, q.NeedsUnpause, q.PauseID = false, false, ""
 		if q.Status == "" {
 			q.Status = quotaUnknown
 		}

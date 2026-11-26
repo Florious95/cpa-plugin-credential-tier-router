@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -18,7 +19,7 @@ func isAntigravityGeo400(event usageEvent) bool {
 
 // prepareRestProjection runs under commitMu and must succeed before a
 // ManagedRest lease is written. A nil payload means an external disable.
-func (r *runtime) prepareRestProjection(ctx context.Context, index string, status int, priorMarker string, poolOwnsDisable bool, until time.Time) (string, []byte, error) {
+func (r *runtime) prepareRestProjection(ctx context.Context, index string, status int, priorID string, poolOwnsDisable bool, pauseID string) (string, []byte, error) {
 	document, err := r.host.getAuth(ctx, index)
 	if err != nil {
 		return "", nil, fmt.Errorf("get credential %s for rest: %w", index, err)
@@ -42,13 +43,13 @@ func (r *runtime) prepareRestProjection(ctx context.Context, index string, statu
 		if !ok {
 			return "", nil, fmt.Errorf("credential %s disabled field is not boolean", index)
 		}
-		if disabled && !ownsRestDisable(root, priorMarker) && (priorMarker != "" || !poolOwnsDisable) {
+		if disabled && !ownsRestDisable(root, priorID) && (priorID != "" || !poolOwnsDisable) {
 			return "", nil, nil
 		}
 	}
 	root["priority"] = -1
 	root["disabled"] = true
-	root["cpa_pause_marker"] = restPauseMarker(&until)
+	root["cpa_pause_id"] = pauseID
 	reason := "geo_400"
 	switch status {
 	case 403:
@@ -64,15 +65,18 @@ func (r *runtime) prepareRestProjection(ctx context.Context, index string, statu
 	return name, updated, err
 }
 
-func restPauseMarker(until *time.Time) string {
-	if until == nil {
-		return ""
+func newRestPauseID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
 	}
-	return until.UTC().Format(time.RFC3339Nano)
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
 
 func ownsRestDisable(root map[string]any, expected string) bool {
-	return expected != "" && root["cpa_pause_marker"] == expected
+	return expected != "" && root["cpa_pause_id"] == expected
 }
 
 func (r *runtime) readRestPauseMarkers(ctx context.Context, files []authFile, cache map[string]quotaSnapshot) {
@@ -90,7 +94,7 @@ func (r *runtime) readRestPauseMarkers(ctx context.Context, files []authFile, ca
 			continue // Leave this credential and its rest untouched; service the other accounts.
 		}
 		var marker string
-		if json.Unmarshal(root["cpa_pause_marker"], &marker) == nil && marker == restPauseMarker(q.RestUntil) {
+		if json.Unmarshal(root["cpa_pause_id"], &marker) == nil && marker != "" && marker == q.PauseID {
 			f.RestPauseMarker = marker
 		}
 	}
@@ -106,7 +110,7 @@ func eventRestUntil(quota quotaSnapshot, now time.Time, duration time.Duration, 
 	return until
 }
 
-func (r *runtime) markGeoRest(index string, now, until time.Time, ownsDisable bool) {
+func (r *runtime) markGeoRest(index string, now, until time.Time, pauseID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state.Quota == nil {
@@ -115,8 +119,8 @@ func (r *runtime) markGeoRest(index string, now, until time.Time, ownsDisable bo
 	quota := r.state.Quota[index]
 	quota.RestUntil = &until
 	quota.ManagedRest = true
-	if ownsDisable {
-		quota.NeedsUnpause = true
+	if pauseID != "" {
+		quota.NeedsUnpause, quota.PauseID = true, pauseID
 	}
 	quota.ObservedAt = now
 	r.state.Quota[index] = quota
@@ -195,11 +199,15 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 		restDuration = time.Duration(cfg.Geo400RestHours) * time.Hour
 	}
 	until := eventRestUntil(q, now, restDuration, event.Failure.StatusCode)
-	var priorMarker string
+	var priorID string
 	if needsUnpause {
-		priorMarker = restPauseMarker(q.RestUntil)
+		priorID = q.PauseID
 	}
-	name, projection, err := r.prepareRestProjection(ctx, index, event.Failure.StatusCode, priorMarker, poolOwnsDisable, until)
+	pauseID, err := newRestPauseID()
+	if err != nil {
+		return err
+	}
+	name, projection, err := r.prepareRestProjection(ctx, index, event.Failure.StatusCode, priorID, poolOwnsDisable, pauseID)
 	if err != nil || projection == nil {
 		return err
 	}
@@ -207,7 +215,7 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	if q.RestUntil == nil {
 		// A new rest may record intent before the hard disable, but that
 		// grants no permission to enable. Never replace a live lease first.
-		r.markGeoRest(index, now, until, false)
+		r.markGeoRest(index, now, until, "")
 		persistErr = r.persistState()
 	}
 	// Attempt the safety disable even if state storage fails, but never admit
@@ -218,7 +226,7 @@ func (r *runtime) handleUsage(ctx context.Context, raw []byte) error {
 	} else {
 		// A durable rest deadline is not permission to undo a manual disable.
 		// Grant that permission only after our hard-disable has succeeded.
-		r.markGeoRest(index, now, until, true)
+		r.markGeoRest(index, now, until, pauseID)
 		if err := r.persistState(); persistErr == nil {
 			persistErr = err
 		}
